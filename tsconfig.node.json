@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    /* === Cible et bibliothèques === */
+    "target": "ESNext",
+    "lib": ["ESNext"],
+
+    /* === Modules et résolution === */
+    "module": "ESNext",
+    "moduleResolution": "Node",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "noEmit": true,
+
+    /* === Vérifications et qualité du code === */
+    "strict": true,
+    "skipLibCheck": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["vite.config.ts"]
+}
