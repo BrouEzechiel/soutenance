@@ -59,6 +59,25 @@ const navigation = [
 const Sidebar = () => {
     const [openMenus, setOpenMenus] = useState<string[]>([]);
 
+    // Récupération des rôles depuis localStorage
+    const user = JSON.parse(localStorage.getItem("user") || "{}");
+    const roles: string[] = user.roles || [];
+    const isAdmin = roles.includes("ROLE_ADMINISTRATEUR");
+
+    // Filtrer la navigation pour cacher "Utilisateurs" et "Société" si pas admin
+    const filteredNavigation = navigation.map(item => {
+        if (item.subItems) {
+            const filteredSubItems = item.subItems.filter(subItem => {
+                if (subItem.name === "Société" && !isAdmin) return false;
+                return true;
+            });
+            return { ...item, subItems: filteredSubItems };
+        }
+        if (item.name === "Utilisateurs" && !isAdmin) return null;
+        return item;
+    }).filter(Boolean) as typeof navigation;
+
+
     const toggleMenu = (name: string) => {
         setOpenMenus(prev =>
             prev.includes(name)
@@ -75,14 +94,14 @@ const Sidebar = () => {
                         <CreditCard className="w-6 h-6 text-white" />
                     </div>
                     <div>
-                        <h1 className="text-lg font-bold text-sidebar-foreground">TrésoBank</h1>
+                        <h1 className="text-lg font-bold text-sidebar-foreground">ORBISTRESORIE</h1>
                         <p className="text-xs text-sidebar-foreground/60">Gestion de trésorerie</p>
                     </div>
                 </div>
             </div>
 
             <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
-                {navigation.map((item) => (
+                {filteredNavigation.map((item) => (
                     <div key={item.name}>
                         {item.subItems ? (
                             <div>
@@ -146,7 +165,9 @@ const Sidebar = () => {
             <div className="p-4 border-t border-sidebar-border">
                 <div className="px-4 py-3 rounded-lg bg-sidebar-accent/50">
                     <p className="text-xs font-medium text-sidebar-foreground">Société</p>
-                    <p className="text-sm font-semibold text-sidebar-foreground mt-1">ABC Corporation</p>
+                    <p className="text-sm font-semibold text-sidebar-foreground mt-1">
+                        {user.societeNom || "Société non définie"}
+                    </p>
                 </div>
             </div>
         </aside>
