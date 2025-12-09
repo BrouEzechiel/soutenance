@@ -18,41 +18,92 @@ export default function Login({ onLogin }: { onLogin?: () => void }) {
         setLoading(true);
 
         try {
+
             const response = await fetch("http://127.0.0.1:8000/api/auth/logins", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ username, password })
+                headers: {
+                    "Content-Type": "application/json",
+                    "Accept": "application/json"
+                },
+                body: JSON.stringify({
+                    username: username.trim(),
+                    password: password
+                })
             });
+
+            const responseText = await response.text();
 
             let data;
             try {
-                data = await response.json();
-                console.log(data)
-                // Password123!
-            } catch {
-                toast.error("Le serveur a renvoyé une réponse invalide.");
+                data = responseText ? JSON.parse(responseText) : {};
+            } catch (parseError) {
+                toast.error("Réponse serveur invalide");
                 return;
             }
 
             if (!response.ok) {
-                toast.error(data?.error || "Identifiants incorrects.");
+                const errorMessage =
+                    data?.message ||
+                    data?.error ||
+                    (response.status === 401 ? "Identifiants incorrects" :
+                        response.status === 403 ? "Compte désactivé" :
+                            response.status === 500 ? "Erreur interne du serveur" :
+                                `Erreur ${response.status}: ${response.statusText}`);
+
+                toast.error(errorMessage);
                 return;
             }
 
-            // Stockage sécurisé dans localStorage
-            localStorage.setItem("token", data.token);
-            localStorage.setItem("isAuthenticated", "true");
-            localStorage.setItem("user", JSON.stringify(data.utilisateur));
+            // Vérifier la structure des données
+            if (!data.data?.token) {
+                toast.error("Token de connexion manquant");
+                return;
+            }
+
+            if (!data.data?.utilisateur) {
+                toast.error("Données utilisateur manquantes");
+                return;
+            }
+
+            // Préparer les données pour le stockage
+            const userData = {
+                id: data.data.utilisateur.id || 0,
+                username: data.data.utilisateur.username || "",
+                firstName: data.data.utilisateur.firstName || "",
+                lastName: data.data.utilisateur.lastName || "",
+                email: data.data.utilisateur.email || "",
+                statut: data.data.utilisateur.statut || "ACTIF",
+                societe: data.data.utilisateur.societe || null,
+                societeNom: data.data.utilisateur.societeNom || "",
+                roles: Array.isArray(data.data.utilisateur.roles) ? data.data.utilisateur.roles : []
+            };
+
+            // Stocker dans localStorage
+            try {
+                localStorage.setItem("token", data.data.token);
+                localStorage.setItem("isAuthenticated", "true");
+                localStorage.setItem("user", JSON.stringify(userData));
+            } catch (storageError) {
+                toast.error("Erreur lors du stockage local");
+                return;
+            }
 
             toast.success("Connexion réussie");
 
-            // Si parent a fourni une fonction onLogin, on l'appelle pour mettre à jour Header
-            if (onLogin) onLogin();
+            // Notifier le parent si besoin
+            if (onLogin) {
+                onLogin();
+            }
 
-            navigate("/index");
-        } catch (err) {
-            console.error("Erreur login :", err);
-            toast.error("Impossible de contacter le serveur.");
+            // Naviguer
+            navigate("/index", { replace: true });
+
+        } catch (err: any) {
+            if (err.name === "TypeError" && err.message.includes("fetch")) {
+                toast.error("Serveur inaccessible. Vérifiez qu'il est démarré.");
+            } else {
+                toast.error("Une erreur inattendue est survenue");
+            }
         } finally {
             setLoading(false);
         }
@@ -78,11 +129,12 @@ export default function Login({ onLogin }: { onLogin?: () => void }) {
                             <Input
                                 id="username"
                                 type="text"
-                                placeholder="votre.nom.utilisateur"
+                                placeholder="Votre nom d'utilisateur"
                                 value={username}
                                 onChange={(e) => setUsername(e.target.value)}
                                 required
                                 autoFocus
+                                disabled={loading}
                             />
                         </div>
 
@@ -91,14 +143,19 @@ export default function Login({ onLogin }: { onLogin?: () => void }) {
                             <Input
                                 id="password"
                                 type="password"
-                                placeholder="••••••••"
+                                placeholder="Votre mot de passe"
                                 value={password}
                                 onChange={(e) => setPassword(e.target.value)}
                                 required
+                                disabled={loading}
                             />
                         </div>
 
-                        <Button type="submit" className="w-full" disabled={loading}>
+                        <Button
+                            type="submit"
+                            className="w-full"
+                            disabled={loading}
+                        >
                             {loading ? "Connexion..." : "Se connecter"}
                         </Button>
                     </form>

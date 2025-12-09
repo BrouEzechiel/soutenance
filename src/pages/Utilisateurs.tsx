@@ -17,20 +17,31 @@ import {
 } from "@/components/ui/alert-dialog";
 import { UtilisateursForm } from "@/components/forms/UtilisateursForm";
 
-// Helper pour l'affichage des badges
-const getRoleBadge = (role: string) => {
-    switch (role) {
-        case "ROLE_ADMINISTRATEUR":
-            return <Badge className="bg-accent text-accent-foreground">Administrateur</Badge>;
-        case "ROLE_TRESORERIE":
-            return <Badge className="bg-primary text-primary-foreground">Trésorerie</Badge>;
-        case "ROLE_COMPTABLE":
-            return <Badge className="bg-green-600 text-white">Comptable</Badge>;
-        case "ROLE_UTILISATEUR":
-            return <Badge variant="outline">Utilisateur</Badge>;
-        default:
-            return <Badge variant="outline">{role}</Badge>;
+// Modifiez la fonction getRoleBadge pour utiliser roleEntities
+const getRoleBadge = (utilisateur: any) => {
+    // Accédez à roleEntities au lieu de roles
+    const roleEntities = utilisateur.roleEntities || [];
+
+    if (Array.isArray(roleEntities) && roleEntities.length > 0) {
+        // Prenez le premier rôle
+        const role = roleEntities[0];
+        const roleCode = role.code || "";
+
+        switch (roleCode) {
+            case "ROLE_ADMINISTRATEUR":
+                return <Badge className="bg-accent text-accent-foreground">Administrateur</Badge>;
+            case "ROLE_TRESORERIE":
+                return <Badge className="bg-primary text-primary-foreground">Trésorerie</Badge>;
+            case "ROLE_COMPTABLE":
+                return <Badge className="bg-green-600 text-white">Comptable</Badge>;
+            case "ROLE_UTILISATEUR":
+                return <Badge variant="outline">Utilisateur</Badge>;
+            default:
+                return <Badge variant="outline">{roleCode}</Badge>;
+        }
     }
+
+    return <Badge variant="outline">Sans rôle</Badge>;
 };
 
 const getStatusBadge = (statut: string) => {
@@ -46,67 +57,50 @@ export default function Utilisateurs() {
 
     const token = localStorage.getItem("token");
 
-    // Fetch des utilisateurs
-    useEffect(() => {
+    const fetchUsers = async () => {
         if (!token) return;
+        try {
+            const res = await fetch("http://127.0.0.1:8000/api/utilisateurs/list", {
+                method: "GET",
+                headers: {
+                    "Authorization": `Bearer ${token}`,
+                    "Content-Type": "application/json",
+                },
+            });
+            if (!res.ok) throw new Error("Erreur API");
+            const data = await res.json();
+            if (Array.isArray(data)) setUtilisateurs(data);
+        } catch (err: any) {
+            toast.error(err.message);
+        }
+    };
 
-        fetch("http://127.0.0.1:8000/api/utilisateurs/list", {
-            method: "GET",
-            headers: {
-                "Authorization": `Bearer ${token}`,
-                "Content-Type": "application/json",
-            },
-        })
-            .then(async res => {
-                if (!res.ok) {
-                    const error = await res.json().catch(() => ({}));
-                    throw new Error(error.message || "Erreur API");
-                }
-                return res.json();
-            })
-            .then(data => {
-                if (Array.isArray(data)) setUtilisateurs(data);
-                else console.error("API n'a pas retourné un tableau :", data);
-            })
-            .catch(err => toast.error(err.message));
+    useEffect(() => {
+        fetchUsers();
     }, [token]);
 
-    // Création / Modification utilisateur
     const onSubmit = async (values: any) => {
         if (!token) return toast.error("Token manquant !");
-
-        // Validation manuelle : Si c'est une création, le mot de passe est obligatoire
-        if (!editingUtilisateur && !values.motDePasseHashe) {
-            return toast.error("Le mot de passe est obligatoire pour un nouvel utilisateur");
-        }
+        if (!editingUtilisateur && !values.motDePasseHashe) return toast.error("Le mot de passe est obligatoire pour un nouvel utilisateur");
 
         try {
             const url = editingUtilisateur
                 ? `http://127.0.0.1:8000/api/utilisateurs/${editingUtilisateur.id}`
                 : "http://127.0.0.1:8000/api/utilisateurs/create";
-
             const method = editingUtilisateur ? "PUT" : "POST";
 
-            // Construction du payload pour l'API
-            // On map les champs du formulaire (français) vers l'API (anglais)
             const payload: any = {
                 firstName: values.prenom,
                 lastName: values.nom,
                 email: values.email,
                 username: values.identifiant,
-                roles: [values.role], // L'API attend un tableau de rôles
+                roles: [values.role],
                 statut: values.statut,
+                societe: values.societe,
             };
 
-            // On ajoute le mot de passe seulement s'il a été renseigné
-            if (values.motDePasseHashe) {
-                payload.password = values.motDePasseHashe;
-            }
-
-            // Si c'est une création, on ajoute la date
-            if (!editingUtilisateur) {
-                payload.created_at = new Date().toISOString();
-            }
+            if (values.motDePasseHashe) payload.password = values.motDePasseHashe;
+            if (!editingUtilisateur) payload.created_at = new Date().toISOString();
 
             const response = await fetch(url, {
                 method,
@@ -123,11 +117,8 @@ export default function Utilisateurs() {
             }
 
             const data = await response.json();
-
             if (editingUtilisateur) {
-                setUtilisateurs(prev =>
-                    prev.map(u => (u.id === editingUtilisateur.id ? data : u))
-                );
+                setUtilisateurs(prev => prev.map(u => (u.id === editingUtilisateur.id ? data : u)));
                 toast.success("Utilisateur modifié avec succès");
             } else {
                 setUtilisateurs(prev => [...prev, data]);
@@ -156,7 +147,7 @@ export default function Utilisateurs() {
         if (!token) return toast.error("Token manquant !");
         fetch(`http://127.0.0.1:8000/api/utilisateurs/${id}`, {
             method: "DELETE",
-            headers: { "Authorization": `Bearer ${token}` },
+            headers: {"Authorization": `Bearer ${token}`},
         })
             .then(res => {
                 if (res.status === 204) {
@@ -178,13 +169,10 @@ export default function Utilisateurs() {
                         <p className="text-muted-foreground">Gérez les utilisateurs de l'application</p>
                     </div>
 
-                    <Dialog open={open} onOpenChange={(isOpen) => {
-                        if (!isOpen) handleClose();
-                        else setOpen(true);
-                    }}>
+                    <Dialog open={open} onOpenChange={(isOpen) => !isOpen ? handleClose() : setOpen(true)}>
                         <DialogTrigger asChild>
                             <Button className="gap-2">
-                                <Plus className="h-4 w-4" /> Nouvel utilisateur
+                                <Plus className="h-4 w-4"/> Nouvel utilisateur
                             </Button>
                         </DialogTrigger>
                         <DialogContent className="sm:max-w-[600px]">
@@ -192,16 +180,16 @@ export default function Utilisateurs() {
                                 <DialogTitle>{editingUtilisateur ? "Modifier l'utilisateur" : "Ajouter un utilisateur"}</DialogTitle>
                             </DialogHeader>
 
-                            {/* Intégration du formulaire avec les valeurs par défaut mappées */}
                             <UtilisateursForm
                                 defaultValues={editingUtilisateur ? {
                                     nom: editingUtilisateur.lastName,
                                     prenom: editingUtilisateur.firstName,
                                     email: editingUtilisateur.email,
                                     identifiant: editingUtilisateur.username,
-                                    motDePasseHashe: "", // Toujours vide à l'ouverture en édition
-                                    role: editingUtilisateur.roles?.[0] || "", // On prend le premier rôle
+                                    motDePasseHashe: "",
+                                    role: editingUtilisateur.roles?.[0] || "",
                                     statut: editingUtilisateur.statut,
+                                    societe: editingUtilisateur.societe?.id || "",
                                 } : undefined}
                                 onSubmit={onSubmit}
                                 onCancel={handleClose}
@@ -223,13 +211,14 @@ export default function Utilisateurs() {
                                     <TableHead>Email</TableHead>
                                     <TableHead>Rôle</TableHead>
                                     <TableHead>Statut</TableHead>
+                                    <TableHead>Société</TableHead>
                                     <TableHead className="text-right">Actions</TableHead>
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
                                 {utilisateurs.length === 0 && (
                                     <TableRow>
-                                        <TableCell colSpan={5} className="text-center py-4 text-muted-foreground">
+                                        <TableCell colSpan={6} className="text-center py-4 text-muted-foreground">
                                             Aucun utilisateur trouvé.
                                         </TableCell>
                                     </TableRow>
@@ -238,15 +227,18 @@ export default function Utilisateurs() {
                                     <TableRow key={u.id}>
                                         <TableCell className="font-medium">{`${u.firstName} ${u.lastName}`}</TableCell>
                                         <TableCell>{u.email}</TableCell>
-                                        <TableCell>{getRoleBadge(u.roles?.[0] || "")}</TableCell>
+                                        <TableCell>{getRoleBadge(u)}</TableCell>
                                         <TableCell>{getStatusBadge(u.statut)}</TableCell>
+                                        <TableCell>{u.societe?.raisonSociale ?? "—"}</TableCell>
                                         <TableCell className="text-right">
                                             <div className="flex justify-end gap-2">
-                                                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleEdit(u)}>
-                                                    <Pencil className="h-4 w-4" />
+                                                <Button variant="ghost" size="icon" className="h-8 w-8"
+                                                        onClick={() => handleEdit(u)}>
+                                                    <Pencil className="h-4 w-4"/>
                                                 </Button>
-                                                <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => setDeletingId(u.id)}>
-                                                    <Trash2 className="h-4 w-4" />
+                                                <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive"
+                                                        onClick={() => setDeletingId(u.id)}>
+                                                    <Trash2 className="h-4 w-4"/>
                                                 </Button>
                                             </div>
                                         </TableCell>
@@ -261,11 +253,14 @@ export default function Utilisateurs() {
                     <AlertDialogContent>
                         <AlertDialogHeader>
                             <AlertDialogTitle>Confirmer la suppression</AlertDialogTitle>
-                            <AlertDialogDescription>Êtes-vous sûr de vouloir supprimer cet utilisateur ? Cette action est irréversible.</AlertDialogDescription>
+                            <AlertDialogDescription>Êtes-vous sûr de vouloir supprimer cet utilisateur ? Cette action
+                                est irréversible.</AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>
                             <AlertDialogCancel>Annuler</AlertDialogCancel>
-                            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => deletingId && handleDelete(deletingId)}>Supprimer</AlertDialogAction>
+                            <AlertDialogAction
+                                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                onClick={() => deletingId && handleDelete(deletingId)}>Supprimer</AlertDialogAction>
                         </AlertDialogFooter>
                     </AlertDialogContent>
                 </AlertDialog>

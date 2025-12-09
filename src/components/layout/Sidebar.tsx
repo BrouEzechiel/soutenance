@@ -1,3 +1,4 @@
+// Code mis à jour avec la bonne gestion des autorisations pour Paramètres + Banques
 import { NavLink } from "react-router-dom";
 import {
     LayoutDashboard,
@@ -11,7 +12,7 @@ import {
     ChevronDown
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 const navigation = [
     { name: "Tableau de bord", href: "/", icon: LayoutDashboard },
@@ -42,41 +43,62 @@ const navigation = [
         icon: Settings,
         subItems: [
             { name: "Société", href: "/parametres/societe" },
-            { name: "Exercice comptable", href: "/parametres/exercice" },
+            { name: "Exercice comptable", href: "/parametres/exercice-comptable" },
+            { name: "Devise", href: "/parametres/gestion-devises" },
             { name: "Comptes trésorerie", href: "/parametres/comptes-tresorerie" },
             { name: "Comptes banques", href: "/parametres/comptes-banques" },
-            { name: "Banques", href: "/parametres/banques" },
+            { name: "Banques", href: "/parametres/CreationBanque" },
             { name: "Comptes bancaires", href: "/parametres/comptes-bancaires" },
             { name: "Tiers", href: "/parametres/tiers" },
             { name: "Charges sociales", href: "/parametres/charges" },
-            { name: "Rôles", href: "/parametres/roles" },
+            { name: "Rôles", href: "/parametres/gestion-roles" },
             { name: "Plan comptable", href: "/parametres/plan-comptable" },
-            { name: "Journaux", href: "/parametres/journaux" }
+            { name: "Journaux", href: "/parametres/journaux-tresorerie" }
         ]
     },
 ];
 
+interface User {
+    roles: string[];
+    societeNom?: string;
+    firstName?: string;
+    lastName?: string;
+    email?: string;
+}
+
 const Sidebar = () => {
     const [openMenus, setOpenMenus] = useState<string[]>([]);
+    const [user, setUser] = useState<User | null>(null);
+    const [loading, setLoading] = useState(true);
 
-    // Récupération des rôles depuis localStorage
-    const user = JSON.parse(localStorage.getItem("user") || "{}");
-    const roles: string[] = user.roles || [];
-    const isAdmin = roles.includes("ROLE_ADMINISTRATEUR");
+    useEffect(() => {
+        // Charger l'utilisateur de manière sécurisée
+        const loadUser = () => {
+            try {
+                const userStr = localStorage.getItem("user");
 
-    // Filtrer la navigation pour cacher "Utilisateurs" et "Société" si pas admin
-    const filteredNavigation = navigation.map(item => {
-        if (item.subItems) {
-            const filteredSubItems = item.subItems.filter(subItem => {
-                if (subItem.name === "Société" && !isAdmin) return false;
-                return true;
-            });
-            return { ...item, subItems: filteredSubItems };
-        }
-        if (item.name === "Utilisateurs" && !isAdmin) return null;
-        return item;
-    }).filter(Boolean) as typeof navigation;
+                if (!userStr || userStr === "undefined" || userStr === "null") {
+                    console.warn("Aucun utilisateur trouvé dans localStorage");
+                    setUser(null);
+                    return;
+                }
 
+                const parsedUser = JSON.parse(userStr);
+                setUser(parsedUser);
+            } catch (error) {
+                console.error("Erreur lors du parsing de l'utilisateur:", error);
+                // Nettoyer les données corrompues
+                localStorage.removeItem("user");
+                localStorage.removeItem("token");
+                localStorage.removeItem("isAuthenticated");
+                setUser(null);
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        loadUser();
+    }, []);
 
     const toggleMenu = (name: string) => {
         setOpenMenus(prev =>
@@ -85,6 +107,83 @@ const Sidebar = () => {
                 : [...prev, name]
         );
     };
+
+    // Si chargement en cours
+    if (loading) {
+        return (
+            <aside className="w-64 bg-sidebar border-r border-sidebar-border flex flex-col">
+                <div className="p-6 border-b border-sidebar-border">
+                    <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-gradient-primary flex items-center justify-center">
+                            <CreditCard className="w-6 h-6 text-white" />
+                        </div>
+                        <div>
+                            <h1 className="text-lg font-bold text-sidebar-foreground">ORBISTRESORIE</h1>
+                            <p className="text-xs text-sidebar-foreground/60">Gestion de trésorerie</p>
+                        </div>
+                    </div>
+                </div>
+                <div className="flex-1 p-4 flex items-center justify-center">
+                    <div className="text-sm text-sidebar-foreground/60">Chargement...</div>
+                </div>
+            </aside>
+        );
+    }
+
+    // Si pas d'utilisateur connecté
+    if (!user) {
+        return (
+            <aside className="w-64 bg-sidebar border-r border-sidebar-border flex flex-col">
+                <div className="p-6 border-b border-sidebar-border">
+                    <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-gradient-primary flex items-center justify-center">
+                            <CreditCard className="w-6 h-6 text-white" />
+                        </div>
+                        <div>
+                            <h1 className="text-lg font-bold text-sidebar-foreground">ORBISTRESORIE</h1>
+                            <p className="text-xs text-sidebar-foreground/60">Gestion de trésorerie</p>
+                        </div>
+                    </div>
+                </div>
+                <div className="flex-1 p-4 flex flex-col items-center justify-center">
+                    <div className="text-center">
+                        <div className="text-sm text-sidebar-foreground/60 mb-2">Non connecté</div>
+                        <NavLink
+                            to="/login"
+                            className="text-sm text-sidebar-primary hover:underline"
+                        >
+                            Se connecter
+                        </NavLink>
+                    </div>
+                </div>
+            </aside>
+        );
+    }
+
+    // Utilisateur connecté - calcul des permissions
+    const roles: string[] = user.roles || [];
+    const isAdmin = roles.includes("ROLE_ADMINISTRATEUR");
+    const isSuperAdmin = roles.includes("ROLE_SUPER_ADMIN");
+
+    const filteredNavigation = navigation
+        .map(item => {
+            if (item.subItems) {
+                const filteredSubItems = item.subItems.filter(subItem => {
+                    if (subItem.name === "Société" && !isAdmin && !isSuperAdmin) return false;
+                    if (subItem.name === "Banques" && !isAdmin && !isSuperAdmin) return false;
+                    return true;
+                });
+
+                if (item.name === "Paramètres" && !(isAdmin || isSuperAdmin)) return null;
+
+                return { ...item, subItems: filteredSubItems };
+            }
+
+            if (item.name === "Utilisateurs" && !isAdmin && !isSuperAdmin) return null;
+
+            return item;
+        })
+        .filter(Boolean) as typeof navigation;
 
     return (
         <aside className="w-64 bg-sidebar border-r border-sidebar-border flex flex-col">
@@ -114,11 +213,14 @@ const Sidebar = () => {
                                 >
                                     <item.icon className="w-5 h-5 flex-shrink-0" />
                                     <span className="font-medium text-sm flex-1 text-left">{item.name}</span>
-                                    <ChevronDown className={cn(
-                                        "w-4 h-4 transition-transform",
-                                        openMenus.includes(item.name) && "rotate-180"
-                                    )} />
+                                    <ChevronDown
+                                        className={cn(
+                                            "w-4 h-4 transition-transform",
+                                            openMenus.includes(item.name) && "rotate-180"
+                                        )}
+                                    />
                                 </button>
+
                                 {openMenus.includes(item.name) && (
                                     <div className="ml-4 mt-1 space-y-1">
                                         {item.subItems.map((subItem) => (

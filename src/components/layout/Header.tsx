@@ -12,6 +12,14 @@ import {
 } from "@/components/ui/dropdown-menu";
 import logo from "@/assets/treswallet-logo.png";
 
+const ROLE_LABELS: Record<string, string> = {
+    ROLE_SUPER_ADMIN: "Super Admin",
+    ROLE_ADMINISTRATEUR: "Admin",
+    ROLE_TRESORERIE: "Trésorier",
+    ROLE_COMPTABLE: "Comptable",
+    ROLE_UTILISATEUR: "Utilisateur",
+};
+
 const Header = () => {
     const [user, setUser] = useState<{ firstName?: string; lastName?: string; roles?: string[] }>({});
 
@@ -47,7 +55,7 @@ const Header = () => {
         ? `${user.firstName || ""} ${user.lastName || ""}`.trim()
         : "Invité";
 
-    const displayRole = user.roles?.[0] || "Aucun rôle";
+    const displayRole = ROLE_LABELS[user.roles?.[0] || ""] || "Aucun rôle";
 
     return (
         <header className="h-16 border-b border-border bg-card px-6 flex items-center justify-between shadow-soft">
