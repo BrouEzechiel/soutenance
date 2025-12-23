@@ -55,7 +55,11 @@ import {
     Unlock,
     Eye,
     ChevronLeft,
-    ChevronRight
+    ChevronRight,
+    AlertTriangle,
+    Info,
+    Currency,
+    Building
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import MainLayout from "@/components/layout/MainLayout";
@@ -78,6 +82,14 @@ interface PlanComptable {
         symbole: string | null;
         statut: string;
     } | null;
+    societe: {
+        id: number;
+        raisonSociale: string;
+        deviseParDefaut?: {
+            id: number;
+            code: string;
+        } | null;
+    } | null;
     createdAt: string;
     updatedAt: string;
     createdBy: string | null;
@@ -87,14 +99,8 @@ interface PlanComptable {
     estCompteTresorerie?: boolean;
     niveauDetail?: number;
     codeFormate?: string;
-}
-
-interface Devise {
-    id: number;
-    code: string;
-    intitule: string;
-    symbole: string | null;
-    statut: string;
+    estDeviseParDefautSociete?: boolean;
+    deviseSynchronisee?: boolean;
 }
 
 interface FormState {
@@ -103,8 +109,7 @@ interface FormState {
     typeCompte: string;
     statut: string;
     description: string;
-    devise: string; // ID de la devise ou "0" pour aucune
-    classeOhada: string; // NE PAS utiliser de string vide
+    classeOhada: string;
 }
 
 interface ApiResponse {
@@ -130,11 +135,21 @@ interface PaginationMeta {
     pages: number;
 }
 
+interface SocieteInfo {
+    id: number;
+    raisonSociale: string;
+    deviseParDefaut?: {
+        id: number;
+        code: string;
+        intitule: string;
+        symbole: string | null;
+    } | null;
+}
+
 const GestionPlanComptable = () => {
     const { toast } = useToast();
     const navigate = useNavigate();
     const [comptes, setComptes] = useState<PlanComptable[]>([]);
-    const [devises, setDevises] = useState<Devise[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState("");
     const [filterType, setFilterType] = useState<string>("all");
@@ -146,6 +161,8 @@ const GestionPlanComptable = () => {
         limit: 20,
         pages: 0
     });
+    const [societeInfo, setSocieteInfo] = useState<SocieteInfo | null>(null);
+    const [loadingSociete, setLoadingSociete] = useState(false);
 
     const [showForm, setShowForm] = useState(false);
     const [editingId, setEditingId] = useState<number | null>(null);
@@ -155,8 +172,7 @@ const GestionPlanComptable = () => {
         typeCompte: "autres",
         statut: "ACTIF",
         description: "",
-        devise: "0", // Utiliser "0" au lieu de "" pour aucune devise
-        classeOhada: "auto" // Utiliser "auto" au lieu de ""
+        classeOhada: "auto"
     });
 
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -165,6 +181,8 @@ const GestionPlanComptable = () => {
     const [compteToLock, setCompteToLock] = useState<PlanComptable | null>(null);
     const [statutDialogOpen, setStatutDialogOpen] = useState(false);
     const [compteForStatut, setCompteForStatut] = useState<PlanComptable | null>(null);
+    const [syncDialogOpen, setSyncDialogOpen] = useState(false);
+    const [syncing, setSyncing] = useState(false);
 
     const token = localStorage.getItem("token") ?? "";
 
@@ -190,7 +208,7 @@ const GestionPlanComptable = () => {
     ];
 
     const classesOhada = [
-        { value: "auto", label: "Automatique (basé sur le code)" }, // Valeur non vide
+        { value: "auto", label: "Automatique (basé sur le code)" },
         { value: "classe_1", label: "Classe 1 - Capitaux" },
         { value: "classe_2", label: "Classe 2 - Immobilisations" },
         { value: "classe_3", label: "Classe 3 - Stocks" },
@@ -215,7 +233,6 @@ const GestionPlanComptable = () => {
             typeCompte: "autres",
             statut: "ACTIF",
             description: "",
-            devise: "0",
             classeOhada: "auto"
         });
     };
@@ -234,13 +251,56 @@ const GestionPlanComptable = () => {
         setTimeout(() => navigate("/login"), 2000);
     };
 
+    const fetchSocieteInfo = async () => {
+        if (!token) return;
+
+        try {
+            setLoadingSociete(true);
+            const res = await fetch("http://127.0.0.1:8000/api/societes/actives", {
+                headers: authHeaders()
+            });
+
+            if (res.ok) {
+                const data = await res.json();
+                console.log("Données sociétés retournées:", data);
+
+                if (data.success && data.data && data.data.length > 0) {
+                    const societe = data.data[0];
+                    console.log("Société chargée:", societe.raisonSociale, "ID:", societe.id);
+                    console.log("Devise par défaut de la société:", societe.deviseParDefaut);
+
+                    setSocieteInfo({
+                        id: societe.id,
+                        raisonSociale: societe.raisonSociale,
+                        deviseParDefaut: societe.deviseParDefaut ? {
+                            id: societe.deviseParDefaut.id,
+                            code: societe.deviseParDefaut.code,
+                            intitule: societe.deviseParDefaut.intitule,
+                            symbole: societe.deviseParDefaut.symbole
+                        } : null
+                    });
+                } else {
+                    console.warn("Aucune société retournée ou succès false");
+                    setSocieteInfo(null);
+                }
+            } else {
+                console.error("Erreur HTTP:", res.status);
+                setSocieteInfo(null);
+            }
+        } catch (err) {
+            console.error("Erreur chargement société:", err);
+            setSocieteInfo(null);
+        } finally {
+            setLoadingSociete(false);
+        }
+    };
+
     const fetchComptes = async (page = 1) => {
         if (!token) return handleSessionExpired();
 
         try {
             setLoading(true);
 
-            // Construire les paramètres de requête
             const params = new URLSearchParams({
                 page: page.toString(),
                 limit: pagination.limit.toString()
@@ -266,7 +326,25 @@ const GestionPlanComptable = () => {
             const response: ApiResponse = await res.json();
 
             if (response.success && response.data) {
-                setComptes(Array.isArray(response.data) ? response.data : []);
+                const comptesData = Array.isArray(response.data) ? response.data : [];
+                console.log("Comptes chargés:", comptesData.length);
+                console.log("Exemple de compte chargé:", comptesData[0]);
+
+                // Vérifier que les comptes appartiennent à la bonne société
+                if (societeInfo) {
+                    const comptesFiltres = comptesData.filter(compte =>
+                        compte.societe && compte.societe.id === societeInfo.id
+                    );
+
+                    if (comptesFiltres.length !== comptesData.length) {
+                        console.warn("Certains comptes ne sont pas de la bonne société");
+                    }
+
+                    setComptes(comptesFiltres);
+                } else {
+                    setComptes(comptesData);
+                }
+
                 if (response.meta) {
                     setPagination(response.meta);
                 }
@@ -294,77 +372,50 @@ const GestionPlanComptable = () => {
         }
     };
 
-    const fetchTypesComptes = async () => {
+    const synchroniserCompteDevise = async (compteId: number) => {
+        if (!token) return handleSessionExpired();
+
         try {
-            const res = await fetch(`${API_URL}/types`, {
-                headers: authHeaders()
+            const res = await fetch(`${API_URL}/${compteId}`, {
+                method: "PUT",
+                headers: authHeaders(),
+                body: JSON.stringify({
+                    // On assigne la devise de la société si elle existe
+                    devise: societeInfo?.deviseParDefaut?.id || null
+                })
             });
-            if (res.ok) {
-                const data = await res.json();
-                if (data.success && Array.isArray(data.data)) {
-                    // Note: Vous pouvez utiliser ces types depuis l'API si nécessaire
-                }
-            }
-        } catch (err) {
-            console.error("Erreur chargement des types:", err);
-        }
-    };
 
-    const fetchDevises = async () => {
-        if (!token) return;
+            if (res.status === 401) return handleSessionExpired();
 
-        try {
-            // Essayer différents endpoints pour les devises
-            const endpoints = [
-                "http://127.0.0.1:8000/api/devises/actives",
-                "http://127.0.0.1:8000/api/devises",
-                "http://127.0.0.1:8000/api/devises?statut=ACTIF"
-            ];
+            const data: ApiResponse = await res.json();
 
-            let success = false;
-            for (const endpoint of endpoints) {
-                try {
-                    const res = await fetch(endpoint, {
-                        headers: authHeaders()
-                    });
-
-                    if (res.ok) {
-                        const data = await res.json();
-                        // Vérifier la structure de la réponse
-                        if (Array.isArray(data)) {
-                            setDevises(data);
-                        } else if (data.success && Array.isArray(data.data)) {
-                            setDevises(data.data);
-                        } else if (data.data && Array.isArray(data.data)) {
-                            setDevises(data.data);
-                        }
-                        success = true;
-                        break;
-                    }
-                } catch (err) {
-                    console.warn(`Endpoint ${endpoint} a échoué:`, err);
-                    continue;
-                }
+            if (!res.ok || !data.success) {
+                throw new Error(data.message || `Erreur ${res.status}`);
             }
 
-            if (!success) {
-                console.warn("Aucun endpoint de devises n'a fonctionné");
-                // Continuer sans devises plutôt que d'afficher une erreur
-            }
+            toast({
+                title: "Devise mise à jour",
+                description: "La devise du compte a été mise à jour",
+                variant: "default"
+            });
 
-        } catch (err) {
-            console.error("Erreur chargement devises:", err);
-            // Ne pas afficher d'erreur toast pour éviter de perturber l'utilisateur
+            await fetchComptes(pagination.page);
+
+        } catch (err: any) {
+            console.error(err);
+            toast({
+                title: "Erreur",
+                description: err.message || "Impossible de mettre à jour la devise",
+                variant: "destructive"
+            });
         }
     };
 
     useEffect(() => {
         fetchComptes(1);
-        fetchTypesComptes();
-        fetchDevises();
+        fetchSocieteInfo();
     }, []);
 
-    // Rafraîchir les comptes quand les filtres changent
     useEffect(() => {
         fetchComptes(1);
     }, [searchTerm, filterType, filterClasse, filterStatut]);
@@ -416,28 +467,34 @@ const GestionPlanComptable = () => {
         const url = editingId ? `${API_URL}/${editingId}` : API_URL;
         const method = editingId ? "PUT" : "POST";
 
-        // Préparer le payload
         const payload: any = {
             codeCompte: form.codeCompte,
             intitule: form.intitule,
             typeCompte: form.typeCompte,
             statut: form.statut,
             description: form.description || null,
-            compteVerrouille: false // Par défaut
+            compteVerrouille: false
         };
 
-        // Gestion de la devise
-        if (form.devise !== "0") {
-            payload.devise = form.devise;
-        }
-
-        // Gestion de la classe OHADA
         if (form.classeOhada !== "auto") {
             payload.classeOhada = form.classeOhada;
         } else {
-            // Si "auto", ne pas envoyer de classeOhada (sera calculée automatiquement côté serveur)
             payload.classeOhada = null;
         }
+
+        // === CORRECTION CRITIQUE : NE PAS ENVOYER LE CHAMP 'devise' À LA CRÉATION ===
+        // Le backend va automatiquement assigner la devise de la société via le PrePersist
+        // Pour la modification (editingId), on peut laisser l'utilisateur modifier la devise
+        if (editingId) {
+            // En mode édition, on peut permettre à l'utilisateur de modifier la devise
+            // Mais pour l'instant, on ne change pas la devise existante
+            console.log("Mode édition - Ne pas modifier la devise automatiquement");
+        }
+        // Pour la création, NE RIEN ENVOYER => le backend assignera automatiquement
+        // === FIN CORRECTION ===
+
+        console.log("Payload envoyé:", payload);
+        console.log("Société info:", societeInfo);
 
         try {
             const res = await fetch(url, {
@@ -466,11 +523,26 @@ const GestionPlanComptable = () => {
                 throw new Error(errorMsg);
             }
 
+            const message = editingId
+                ? "Compte modifié avec succès"
+                : "Compte créé avec succès";
+
             toast({
                 title: editingId ? "Compte modifié" : "Compte créé",
-                description: data.message || "Opération réussie",
+                description: message,
                 variant: "default"
             });
+
+            // Afficher un message spécifique pour la devise
+            if (!editingId) {
+                const deviseAttribuee = data.data?.devise?.code || "non définie";
+                toast({
+                    title: "Devise attribuée",
+                    description: `La devise ${deviseAttribuee} a été automatiquement attribuée au compte`,
+                    variant: "default",
+                    duration: 3000
+                });
+            }
 
             resetForm();
             setShowForm(false);
@@ -502,7 +574,6 @@ const GestionPlanComptable = () => {
             typeCompte: compte.typeCompte,
             statut: compte.statut,
             description: compte.description || "",
-            devise: compte.devise?.id?.toString() || "0",
             classeOhada: compte.classeOhada || "auto"
         });
         setEditingId(compte.id);
@@ -697,6 +768,35 @@ const GestionPlanComptable = () => {
         );
     };
 
+    const getDeviseBadge = (compte: PlanComptable) => {
+        if (!compte.devise) {
+            return (
+                <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200">
+                    <AlertTriangle className="w-3 h-3 mr-1" /> Pas de devise
+                </Badge>
+            );
+        }
+
+        // Vérifier si c'est la devise de la société (utilisation des nouveaux champs backend)
+        const isDeviseSociete = compte.estDeviseParDefautSociete ||
+            (societeInfo?.deviseParDefaut?.id === compte.devise.id);
+
+        if (isDeviseSociete) {
+            return (
+                <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
+                    <Currency className="w-3 h-3 mr-1" /> {compte.devise.code}
+                    <span className="ml-1 text-xs">(société)</span>
+                </Badge>
+            );
+        } else {
+            return (
+                <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200">
+                    <Currency className="w-3 h-3 mr-1" /> {compte.devise.code}
+                </Badge>
+            );
+        }
+    };
+
     const formatDate = (dateString: string) => {
         try {
             return new Date(dateString).toLocaleDateString('fr-FR', {
@@ -717,10 +817,17 @@ const GestionPlanComptable = () => {
         }
     };
 
+    // Calcul des comptes avec devise différente de celle de la société
+    const comptesAvecDeviseDifferent = comptes.filter(c =>
+        !c.estDeviseParDefautSociete &&
+        (!c.devise || (societeInfo?.deviseParDefaut && c.devise.id !== societeInfo.deviseParDefaut.id))
+    );
+
     const stats = {
         total: pagination.total,
         actifs: comptes.filter(c => c.statut === "ACTIF").length,
         verrouilles: comptes.filter(c => c.compteVerrouille).length,
+        nonSynchronises: comptesAvecDeviseDifferent.length,
         classes: Object.entries(
             comptes.reduce((acc, compte) => {
                 if (compte.classeOhada) {
@@ -729,6 +836,70 @@ const GestionPlanComptable = () => {
                 return acc;
             }, {} as Record<string, number>)
         ).map(([classe, count]) => ({ classe, count }))
+    };
+
+    // Nouvelle fonction pour synchroniser manuellement chaque compte
+    const synchroniserComptesUnParUn = async () => {
+        if (!token || !societeInfo?.deviseParDefaut) return handleSessionExpired();
+
+        try {
+            setSyncing(true);
+            const comptesNonSync = comptesAvecDeviseDifferent;
+
+            let successCount = 0;
+            let errorCount = 0;
+
+            for (const compte of comptesNonSync) {
+                try {
+                    const res = await fetch(`${API_URL}/${compte.id}`, {
+                        method: "PUT",
+                        headers: authHeaders(),
+                        body: JSON.stringify({
+                            devise: societeInfo.deviseParDefaut?.id || null
+                        })
+                    });
+
+                    if (res.ok) {
+                        successCount++;
+                    } else {
+                        errorCount++;
+                    }
+                } catch (err) {
+                    errorCount++;
+                    console.error(`Erreur sur compte ${compte.id}:`, err);
+                }
+            }
+
+            await fetchComptes(pagination.page);
+
+            if (successCount > 0) {
+                toast({
+                    title: "Synchronisation partielle réussie",
+                    description: `${successCount} compte(s) mis à jour, ${errorCount} erreur(s)`,
+                    variant: "default"
+                });
+            }
+
+            if (errorCount > 0) {
+                toast({
+                    title: "Erreurs de synchronisation",
+                    description: `${errorCount} compte(s) n'ont pas pu être mis à jour`,
+                    variant: "destructive"
+                });
+            }
+
+            setSyncDialogOpen(false);
+
+        } catch (err: any) {
+            console.error(err);
+            toast({
+                title: "Erreur",
+                description: err.message || "Impossible de synchroniser les devises",
+                variant: "destructive"
+            });
+        } finally {
+            setSyncing(false);
+        }
     };
 
     return (
@@ -740,20 +911,63 @@ const GestionPlanComptable = () => {
                         <p className="text-muted-foreground">
                             Gestion des comptes comptables OHADA
                         </p>
+                        <div className="flex items-center gap-2 mt-2">
+                            {loadingSociete ? (
+                                <div className="flex items-center text-sm text-muted-foreground">
+                                    <RefreshCw className="w-3 h-3 animate-spin mr-1" />
+                                    Chargement société...
+                                </div>
+                            ) : societeInfo ? (
+                                <div className="flex items-center gap-2 text-sm">
+                                    <Building className="w-4 h-4 text-muted-foreground" />
+                                    <span className="font-medium">{societeInfo.raisonSociale}</span>
+                                    {societeInfo.deviseParDefaut && (
+                                        <>
+                                            <span className="text-muted-foreground">•</span>
+                                            <Currency className="w-4 h-4 text-muted-foreground" />
+                                            <Badge variant="outline" className="text-xs">
+                                                {societeInfo.deviseParDefaut.code}
+                                                {societeInfo.deviseParDefaut.symbole && ` (${societeInfo.deviseParDefaut.symbole})`}
+                                            </Badge>
+                                            <span className="text-xs text-muted-foreground">
+                                                (devise par défaut)
+                                            </span>
+                                        </>
+                                    )}
+                                </div>
+                            ) : (
+                                <div className="text-sm text-amber-600">
+                                    <AlertTriangle className="w-4 h-4 inline mr-1" />
+                                    Société non configurée
+                                </div>
+                            )}
+                        </div>
                     </div>
-                    <Button
-                        className="gap-2"
-                        onClick={() => {
-                            resetForm();
-                            setShowForm(true);
-                        }}
-                    >
-                        <Plus className="w-4 h-4" />
-                        Nouveau compte
-                    </Button>
+                    <div className="flex gap-2">
+                        {stats.nonSynchronises > 0 && (
+                            <Button
+                                variant="destructive"
+                                onClick={() => setSyncDialogOpen(true)}
+                                className="gap-2"
+                            >
+                                <AlertTriangle className="w-4 h-4" />
+                                {stats.nonSynchronises} devise(s) différente(s)
+                            </Button>
+                        )}
+                        <Button
+                            className="gap-2"
+                            onClick={() => {
+                                resetForm();
+                                setShowForm(true);
+                            }}
+                        >
+                            <Plus className="w-4 h-4" />
+                            Nouveau compte
+                        </Button>
+                    </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
                     <Card>
                         <CardContent className="pt-6">
                             <div className="text-center">
@@ -781,6 +995,14 @@ const GestionPlanComptable = () => {
                     <Card>
                         <CardContent className="pt-6">
                             <div className="text-center">
+                                <div className="text-3xl font-bold text-amber-600">{stats.nonSynchronises}</div>
+                                <div className="text-sm text-muted-foreground">Devises différentes</div>
+                            </div>
+                        </CardContent>
+                    </Card>
+                    <Card>
+                        <CardContent className="pt-6">
+                            <div className="text-center">
                                 <div className="text-3xl font-bold">{stats.classes.length}</div>
                                 <div className="text-sm text-muted-foreground">Classes OHADA</div>
                             </div>
@@ -790,7 +1012,7 @@ const GestionPlanComptable = () => {
 
                 <Card>
                     <CardContent className="pt-6">
-                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
                             <div className="space-y-2">
                                 <Label htmlFor="search">Recherche</Label>
                                 <div className="relative">
@@ -852,6 +1074,24 @@ const GestionPlanComptable = () => {
                                     </SelectContent>
                                 </Select>
                             </div>
+                            <div className="space-y-2">
+                                <Label>Filtre devise</Label>
+                                <Select
+                                    value={filterStatut}
+                                    onValueChange={(value) => {
+                                        // Vous pouvez ajouter un filtre supplémentaire pour les devises
+                                    }}
+                                >
+                                    <SelectTrigger>
+                                        <SelectValue placeholder="Toutes devises" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="all">Toutes devises</SelectItem>
+                                        <SelectItem value="same">Identique à société</SelectItem>
+                                        <SelectItem value="different">Différente de société</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
                         </div>
                     </CardContent>
                 </Card>
@@ -894,7 +1134,7 @@ const GestionPlanComptable = () => {
                                     </div>
                                 </div>
 
-                                <div className="grid grid-cols-3 gap-4">
+                                <div className="grid grid-cols-2 gap-4">
                                     <div className="space-y-2">
                                         <Label>Type de compte *</Label>
                                         <Select
@@ -908,25 +1148,6 @@ const GestionPlanComptable = () => {
                                                 {typesComptes.map(type => (
                                                     <SelectItem key={type.value} value={type.value}>
                                                         {type.label}
-                                                    </SelectItem>
-                                                ))}
-                                            </SelectContent>
-                                        </Select>
-                                    </div>
-                                    <div className="space-y-2">
-                                        <Label>Devise</Label>
-                                        <Select
-                                            value={form.devise}
-                                            onValueChange={(value) => handleSelectChange('devise', value)}
-                                        >
-                                            <SelectTrigger>
-                                                <SelectValue placeholder="Sélectionner une devise" />
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                                <SelectItem value="0">Aucune devise</SelectItem>
-                                                {devises.map(devise => (
-                                                    <SelectItem key={devise.id} value={devise.id.toString()}>
-                                                        {devise.code} - {devise.intitule}
                                                     </SelectItem>
                                                 ))}
                                             </SelectContent>
@@ -982,9 +1203,34 @@ const GestionPlanComptable = () => {
                                     </Select>
                                 </div>
 
+                                <div className="p-3 bg-blue-50 text-blue-800 rounded-md text-sm">
+                                    <div className="flex items-start gap-2">
+                                        <Info className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                                        <div>
+                                            <strong>ℹ️ Information devise :</strong>
+                                            {editingId ? (
+                                                "La devise actuelle sera conservée."
+                                            ) : societeInfo?.deviseParDefaut ? (
+                                                `Le compte sera automatiquement créé avec la devise de votre société (${societeInfo.deviseParDefaut.code}).`
+                                            ) : (
+                                                "Votre société n'a pas de devise par défaut configurée."
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+
                                 {editingId && (
-                                    <div className="text-sm text-muted-foreground">
-                                        <p>⚠️ Note : Le code compte ne peut pas être modifié après création si le compte est utilisé.</p>
+                                    <div className="p-3 bg-amber-50 text-amber-800 rounded-md text-sm">
+                                        <div className="flex items-start gap-2">
+                                            <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                                            <div>
+                                                <strong>⚠️ Attention :</strong>
+                                                {societeInfo?.deviseParDefaut && comptes.find(c => c.id === editingId)?.devise?.id !== societeInfo.deviseParDefaut.id && (
+                                                    <span> La devise de ce compte n'est pas celle de votre société. </span>
+                                                )}
+                                                Le code compte ne peut pas être modifié après création si le compte est utilisé.
+                                            </div>
+                                        </div>
                                     </div>
                                 )}
 
@@ -1014,7 +1260,20 @@ const GestionPlanComptable = () => {
 
                 <Card>
                     <CardHeader>
-                        <CardTitle>Liste des comptes</CardTitle>
+                        <div className="flex justify-between items-center">
+                            <CardTitle>Liste des comptes</CardTitle>
+                            {stats.nonSynchronises > 0 && (
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => setSyncDialogOpen(true)}
+                                    className="gap-2"
+                                >
+                                    <AlertTriangle className="w-4 h-4" />
+                                    {stats.nonSynchronises} devise(s) différente(s)
+                                </Button>
+                            )}
+                        </div>
                     </CardHeader>
                     <CardContent>
                         {loading ? (
@@ -1067,15 +1326,18 @@ const GestionPlanComptable = () => {
                                                             {getClasseBadge(compte.classeOhada)}
                                                         </TableCell>
                                                         <TableCell>
-                                                            {compte.devise ? (
-                                                                <div className="flex items-center gap-1">
-                                                                    <span className="font-medium">{compte.devise.code}</span>
-                                                                    <span className="text-xs text-muted-foreground">
-                                                                        ({compte.devise.symbole || "-"})
-                                                                    </span>
-                                                                </div>
-                                                            ) : (
-                                                                <span className="text-muted-foreground">-</span>
+                                                            {getDeviseBadge(compte)}
+                                                            {/* Bouton de synchronisation seulement si la devise est différente de celle de la société */}
+                                                            {!compte.estDeviseParDefautSociete && compte.devise && (
+                                                                <Button
+                                                                    variant="ghost"
+                                                                    size="sm"
+                                                                    className="h-6 px-2 ml-2"
+                                                                    onClick={() => synchroniserCompteDevise(compte.id)}
+                                                                    title="Synchroniser avec la devise de la société"
+                                                                >
+                                                                    <RefreshCw className="w-3 h-3" />
+                                                                </Button>
                                                             )}
                                                         </TableCell>
                                                         <TableCell>
@@ -1186,6 +1448,166 @@ const GestionPlanComptable = () => {
                     </CardContent>
                 </Card>
 
+                {/* Dialog de synchronisation */}
+                <Dialog open={syncDialogOpen} onOpenChange={setSyncDialogOpen}>
+                    <DialogContent className="max-w-2xl">
+                        <DialogHeader>
+                            <DialogTitle>
+                                <div className="flex items-center gap-2">
+                                    <AlertTriangle className="w-5 h-5 text-amber-600" />
+                                    Gestion des devises
+                                </div>
+                            </DialogTitle>
+                        </DialogHeader>
+                        <DialogDescription>
+                            Certains comptes n'utilisent pas la devise par défaut de votre société.
+                        </DialogDescription>
+
+                        <div className="space-y-4">
+                            <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                                <div className="flex items-start gap-3">
+                                    <Info className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" />
+                                    <div>
+                                        <h4 className="font-medium text-amber-800 mb-1">Devise de votre société</h4>
+                                        {societeInfo?.deviseParDefaut ? (
+                                            <div className="flex items-center gap-2">
+                                                <Badge variant="outline" className="bg-white">
+                                                    {societeInfo.deviseParDefaut.code}
+                                                </Badge>
+                                                <span>{societeInfo.deviseParDefaut.intitule}</span>
+                                                {societeInfo.deviseParDefaut.symbole && (
+                                                    <span className="text-muted-foreground">({societeInfo.deviseParDefaut.symbole})</span>
+                                                )}
+                                            </div>
+                                        ) : (
+                                            <p className="text-amber-700">Aucune devise configurée pour votre société</p>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {stats.nonSynchronises > 0 ? (
+                                <>
+                                    <div className="border rounded-lg overflow-hidden">
+                                        <Table>
+                                            <TableHeader>
+                                                <TableRow>
+                                                    <TableHead>Code</TableHead>
+                                                    <TableHead>Intitulé</TableHead>
+                                                    <TableHead>Devise actuelle</TableHead>
+                                                    <TableHead className="text-right">Actions</TableHead>
+                                                </TableRow>
+                                            </TableHeader>
+                                            <TableBody>
+                                                {comptesAvecDeviseDifferent.map((compte) => (
+                                                    <TableRow key={compte.id}>
+                                                        <TableCell className="font-mono">
+                                                            {compte.codeCompte}
+                                                        </TableCell>
+                                                        <TableCell className="max-w-xs truncate">
+                                                            {compte.intitule}
+                                                        </TableCell>
+                                                        <TableCell>
+                                                            {compte.devise ? (
+                                                                <div className="flex items-center gap-2">
+                                                                    <Badge variant="outline" className="bg-red-50 text-red-700">
+                                                                        {compte.devise.code}
+                                                                    </Badge>
+                                                                    {societeInfo?.deviseParDefaut && (
+                                                                        <span className="text-sm text-muted-foreground">
+                                                                            ≠ {societeInfo.deviseParDefaut.code}
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                            ) : (
+                                                                <Badge variant="outline" className="bg-amber-50 text-amber-700">
+                                                                    Aucune
+                                                                </Badge>
+                                                            )}
+                                                        </TableCell>
+                                                        <TableCell className="text-right">
+                                                            <Button
+                                                                variant="outline"
+                                                                size="sm"
+                                                                onClick={() => {
+                                                                    synchroniserCompteDevise(compte.id);
+                                                                    setSyncDialogOpen(false);
+                                                                }}
+                                                            >
+                                                                <RefreshCw className="w-4 h-4 mr-1" />
+                                                                Mettre à jour
+                                                            </Button>
+                                                        </TableCell>
+                                                    </TableRow>
+                                                ))}
+                                            </TableBody>
+                                        </Table>
+                                    </div>
+
+                                    <Separator />
+
+                                    <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                                        <div className="flex items-start gap-3">
+                                            <Info className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" />
+                                            <div>
+                                                <h4 className="font-medium text-blue-800 mb-1">Mise à jour en masse</h4>
+                                                <p className="text-blue-700 text-sm">
+                                                    Vous pouvez mettre à jour tous les comptes en une seule opération.
+                                                    Cela attribuera la devise de votre société à tous les comptes listés ci-dessus.
+                                                </p>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <DialogFooter>
+                                        <Button
+                                            variant="outline"
+                                            onClick={() => setSyncDialogOpen(false)}
+                                            disabled={syncing}
+                                        >
+                                            Annuler
+                                        </Button>
+                                        <Button
+                                            variant="destructive"
+                                            onClick={synchroniserComptesUnParUn}
+                                            disabled={syncing || !societeInfo?.deviseParDefaut}
+                                            className="gap-2"
+                                        >
+                                            {syncing ? (
+                                                <>
+                                                    <RefreshCw className="w-4 h-4 animate-spin" />
+                                                    Mise à jour...
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <RefreshCw className="w-4 h-4" />
+                                                    Mettre à jour tous ({stats.nonSynchronises})
+                                                </>
+                                            )}
+                                        </Button>
+                                    </DialogFooter>
+                                </>
+                            ) : (
+                                <div className="text-center py-8">
+                                    <CheckCircle className="w-12 h-12 text-green-500 mx-auto mb-4" />
+                                    <h3 className="font-medium text-lg mb-2">Toutes les devises sont identiques</h3>
+                                    <p className="text-muted-foreground">
+                                        Tous vos comptes utilisent la devise de votre société.
+                                    </p>
+                                    <Button
+                                        variant="outline"
+                                        className="mt-4"
+                                        onClick={() => setSyncDialogOpen(false)}
+                                    >
+                                        Fermer
+                                    </Button>
+                                </div>
+                            )}
+                        </div>
+                    </DialogContent>
+                </Dialog>
+
+                {/* Les autres dialogs restent inchangés */}
                 <Dialog open={lockDialogOpen} onOpenChange={setLockDialogOpen}>
                     <DialogContent>
                         <DialogHeader>
@@ -1322,29 +1744,59 @@ const GestionPlanComptable = () => {
                                 </div>
 
                                 <div>
-                                    <Label className="text-sm text-muted-foreground">Classe OHADA</Label>
-                                    <div className="mt-1">
-                                        {getClasseBadge(compteForStatut.classeOhada) || (
-                                            <span className="text-muted-foreground">Automatique</span>
-                                        )}
-                                    </div>
-                                </div>
-
-                                <div>
-                                    <Label className="text-sm text-muted-foreground">Devise associée</Label>
+                                    <Label className="text-sm text-muted-foreground">Devise</Label>
                                     <div className="mt-1">
                                         {compteForStatut.devise ? (
                                             <div className="flex items-center gap-2">
-                                                <Badge variant="outline">
+                                                <Badge variant="outline" className={
+                                                    compteForStatut.estDeviseParDefautSociete ||
+                                                    (societeInfo?.deviseParDefaut &&
+                                                        societeInfo.deviseParDefaut.id === compteForStatut.devise.id)
+                                                        ? "bg-green-50 text-green-700"
+                                                        : "bg-red-50 text-red-700"
+                                                }>
                                                     {compteForStatut.devise.code}
+                                                    {compteForStatut.estDeviseParDefautSociete && (
+                                                        <span className="ml-1 text-xs">(société)</span>
+                                                    )}
                                                 </Badge>
                                                 <span>{compteForStatut.devise.intitule}</span>
                                                 {compteForStatut.devise.symbole && (
                                                     <span className="text-muted-foreground">({compteForStatut.devise.symbole})</span>
                                                 )}
+                                                {!compteForStatut.estDeviseParDefautSociete && (
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="sm"
+                                                        className="h-6 px-2"
+                                                        onClick={() => {
+                                                            synchroniserCompteDevise(compteForStatut.id);
+                                                            setStatutDialogOpen(false);
+                                                        }}
+                                                        title="Synchroniser avec la devise de la société"
+                                                    >
+                                                        <RefreshCw className="w-3 h-3" />
+                                                    </Button>
+                                                )}
                                             </div>
                                         ) : (
-                                            <span className="text-muted-foreground">Aucune devise spécifiée</span>
+                                            <div className="flex items-center gap-2">
+                                                <Badge variant="outline" className="bg-amber-50 text-amber-700">
+                                                    Aucune devise
+                                                </Badge>
+                                                <Button
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    className="h-6 px-2"
+                                                    onClick={() => {
+                                                        synchroniserCompteDevise(compteForStatut.id);
+                                                        setStatutDialogOpen(false);
+                                                    }}
+                                                    title="Assigner la devise de la société"
+                                                >
+                                                    <RefreshCw className="w-3 h-3" />
+                                                </Button>
+                                            </div>
                                         )}
                                     </div>
                                 </div>

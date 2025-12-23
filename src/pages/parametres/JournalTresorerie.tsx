@@ -28,7 +28,6 @@ import {
     DialogDescription,
     DialogHeader,
     DialogTitle,
-    DialogTrigger,
 } from "@/components/ui/dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
@@ -36,7 +35,6 @@ import {
     Save,
     Edit,
     Trash2,
-    Eye,
     Lock,
     Unlock,
     CheckCircle,
@@ -46,46 +44,64 @@ import {
     RefreshCw,
     Search,
     Filter,
+    Eye,
+    EyeOff,
 } from "lucide-react";
 
-// Types alignés avec l'entité JournalTresorerie
+// Types
 interface PlanComptable {
     id: number;
     codeCompte: string;
     intitule: string;
-    typeCompte: string;
-    codeFormate: string;
+    typeCompte?: string;
+    codeFormate?: string;
     statut: string;
+    societe?: {
+        id: number;
+        nom: string;
+    };
 }
 
 interface JournalTresorerie {
     id?: number;
     code: string;
     intitule: string;
-    typeJournal: "BANQUE" | "CAISSE" | "VIREMENT_INTERNE" | "OD_TRESORERIE" | "DIVERS";
+    typeJournal: "BANQUE" | "OD_TRESORERIE" | "DIVERS";
     compteAssocieId: number;
     compteAssocie?: PlanComptable;
+    societe?: {
+        id: number;
+        nom: string;
+    };
     statut: "ACTIF" | "INACTIF";
     estVerrouille: boolean;
     description?: string;
     hasBeenUsed?: boolean;
     peutEtreSupprime?: boolean;
     peutEtreModifie?: boolean;
+    peutEtreDesactive?: boolean;
     peutEtreUtilisePourSaisie?: boolean;
+    restrictionsMessage?: string;
+    classeComptableRequise?: string;
     nombreOperations?: number;
-    nombreEcritures?: number;
     createdAt?: string;
     updatedAt?: string;
+    createdBy?: any;
+    updatedBy?: any;
 }
 
 const API_BASE_URL = "http://127.0.0.1:8000/api";
 
-// Fonction utilitaire pour les headers d'authentification
+// Fonction utilitaire pour les headers
 const getAuthHeaders = (): HeadersInit => {
-    const token = localStorage.getItem("token");
+    const token = localStorage.getItem("auth_token") ||
+        localStorage.getItem("token") ||
+        sessionStorage.getItem("auth_token") ||
+        sessionStorage.getItem("token");
+
     const headers: HeadersInit = {
         "Content-Type": "application/json",
-        Accept: "application/json",
+        "Accept": "application/json",
     };
 
     if (token) {
@@ -105,8 +121,11 @@ const JournalTresorerie = () => {
     const [showForm, setShowForm] = useState(false);
     const [editMode, setEditMode] = useState(false);
     const [searchTerm, setSearchTerm] = useState("");
-    const [filterType, setFilterType] = useState<string>("");
-    const [filterStatut, setFilterStatut] = useState<string>("");
+    const [filterType, setFilterType] = useState<string>("all");
+    const [filterStatut, setFilterStatut] = useState<string>("all");
+    const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+    const [filterVerrouille, setFilterVerrouille] = useState<string>("all");
+    const [filterUsed, setFilterUsed] = useState<string>("all");
 
     // État du formulaire
     const [formData, setFormData] = useState<JournalTresorerie>({
@@ -119,42 +138,36 @@ const JournalTresorerie = () => {
         description: "",
     });
 
-    // Types de journaux disponibles
+    // Types de journaux disponibles selon l'entité PHP (SANS CAISSE)
     const typesJournal = [
         { value: "BANQUE", label: "Banque" },
-        { value: "CAISSE", label: "Caisse" },
-        { value: "VIREMENT_INTERNE", label: "Virement interne" },
-        { value: "OD_TRESORERIE", label: "OD de trésorerie" },
+        { value: "OD_TRESORERIE", label: "Opérations diverses de trésorerie" },
         { value: "DIVERS", label: "Divers" },
     ];
 
-    // Classes comptables requises par type de journal
+    // Classes comptables requises (selon l'entité JournalTresorerie.php)
     const getClasseRequise = (type: string): string => {
         switch (type) {
-            case "BANQUE":
-                return "52";
-            case "CAISSE":
-                return "57";
-            case "VIREMENT_INTERNE":
-            case "OD_TRESORERIE":
-            case "DIVERS":
-                return "58";
-            default:
-                return "58";
+            case "BANQUE": return "52";
+            case "OD_TRESORERIE": return "58";
+            case "DIVERS": return "58";
+            default: return "58";
         }
     };
 
-    // Filtrer les plans comptables par classe requise
+    // Filtrer les plans comptables
     const getPlansComptablesFiltres = () => {
         if (!formData.typeJournal) return planComptables;
 
         const classeRequise = getClasseRequise(formData.typeJournal);
+
+        // Filtre par classe OHADA (premier chiffre du code compte)
         return planComptables.filter(
-            (pc) => pc.codeCompte.startsWith(classeRequise) && pc.statut === "ACTIF"
+            pc => pc.codeCompte.startsWith(classeRequise.substring(0, 1)) && pc.statut === "ACTIF"
         );
     };
 
-    // Chargement initial des données
+    // Chargement des données
     useEffect(() => {
         fetchData();
     }, []);
@@ -166,33 +179,60 @@ const JournalTresorerie = () => {
 
             const headers = getAuthHeaders();
 
-            // Charger les journaux
+            // 1. Charger les journaux
             const journauxResponse = await fetch(`${API_BASE_URL}/journaux-tresorerie`, {
                 headers,
             });
-            if (!journauxResponse.ok) {
-                throw new Error("Erreur lors du chargement des journaux");
+
+            if (journauxResponse.status === 401) {
+                setError("Non authentifié. Veuillez vous connecter.");
+                toast({
+                    title: "Session expirée",
+                    description: "Veuillez vous reconnecter",
+                    variant: "destructive",
+                });
+                setLoading(false);
+                return;
             }
+
+            if (!journauxResponse.ok) {
+                const errorData = await journauxResponse.json();
+                throw new Error(errorData.error || `Erreur ${journauxResponse.status} lors du chargement des journaux`);
+            }
+
             const journauxData = await journauxResponse.json();
             setJournaux(journauxData.data || []);
 
-            // Charger les plans comptables actifs
-            const planComptableResponse = await fetch(
-                `${API_BASE_URL}/plan-comptable/actifs`,
-                { headers }
-            );
-            if (planComptableResponse.ok) {
-                const planComptableData = await planComptableResponse.json();
-                setPlanComptables(planComptableData.data || []);
+            // 2. Charger les plans comptables
+            try {
+                const pcResponse = await fetch(`${API_BASE_URL}/plan-comptables/actifs`, {
+                    headers,
+                });
+
+                if (pcResponse.ok) {
+                    const pcData = await pcResponse.json();
+                    if (pcData.data) {
+                        setPlanComptables(pcData.data);
+                    } else if (Array.isArray(pcData)) {
+                        setPlanComptables(pcData);
+                    } else {
+                        await loadPlanComptablesFallback(headers);
+                    }
+                } else {
+                    await loadPlanComptablesFallback(headers);
+                }
+            } catch (pcError) {
+                console.warn("Erreur lors du chargement des plans comptables:", pcError);
+                await loadPlanComptablesFallback(headers);
             }
 
         } catch (error) {
             console.error("Erreur lors du chargement des données:", error);
-            setError("Impossible de charger les données. Veuillez réessayer.");
+            setError(error instanceof Error ? error.message : "Erreur inconnue");
 
             toast({
                 title: "Erreur",
-                description: "Impossible de charger les données nécessaires",
+                description: "Impossible de charger les données",
                 variant: "destructive",
             });
         } finally {
@@ -200,22 +240,45 @@ const JournalTresorerie = () => {
         }
     };
 
+    // Fallback pour charger les plans comptables
+    const loadPlanComptablesFallback = async (headers: HeadersInit) => {
+        try {
+            const fallbackResponse = await fetch(`${API_BASE_URL}/plan-comptables`, {
+                headers,
+            });
+
+            if (fallbackResponse.ok) {
+                const fallbackData = await fallbackResponse.json();
+                if (fallbackData.data) {
+                    setPlanComptables(fallbackData.data);
+                } else if (Array.isArray(fallbackData)) {
+                    setPlanComptables(fallbackData);
+                } else {
+                    setPlanComptables([]);
+                }
+            } else {
+                setPlanComptables([]);
+            }
+        } catch (error) {
+            setPlanComptables([]);
+        }
+    };
+
     const handleFormChange = (
         field: keyof JournalTresorerie,
         value: string | boolean | number
     ) => {
-        setFormData((prev) => ({
-            ...prev,
-            [field]: value,
-        }));
+        const updatedFormData = {
+            ...formData,
+            [field]: value
+        };
 
         // Si le type de journal change, réinitialiser le compte associé
         if (field === "typeJournal") {
-            setFormData((prev) => ({
-                ...prev,
-                compteAssocieId: 0,
-            }));
+            updatedFormData.compteAssocieId = 0;
         }
+
+        setFormData(updatedFormData);
     };
 
     const validateForm = (): string[] => {
@@ -237,11 +300,30 @@ const JournalTresorerie = () => {
             errors.push("Le compte comptable associé est obligatoire");
         }
 
-        if (!formData.typeJournal) {
-            errors.push("Le type de journal est obligatoire");
-        }
-
         return errors;
+    };
+
+    // Vérifier si le code est unique
+    const checkCodeUnique = async (code: string, excludeId?: number): Promise<boolean> => {
+        try {
+            let url = `${API_BASE_URL}/journaux-tresorerie/validation/code/${code}`;
+            if (excludeId) {
+                url += `?excludeId=${excludeId}`;
+            }
+
+            const response = await fetch(url, {
+                headers: getAuthHeaders(),
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                return data.isUnique;
+            }
+            return false;
+        } catch (error) {
+            console.error("Erreur lors de la vérification du code:", error);
+            return false;
+        }
     };
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -249,7 +331,7 @@ const JournalTresorerie = () => {
 
         const validationErrors = validateForm();
         if (validationErrors.length > 0) {
-            validationErrors.forEach((error) => {
+            validationErrors.forEach(error => {
                 toast({
                     title: "Erreur de validation",
                     description: error,
@@ -259,12 +341,8 @@ const JournalTresorerie = () => {
             return;
         }
 
-        // Vérifier l'unicité du code en temps réel
-        const isCodeUnique = await validateCodeUnique(
-            formData.code,
-            editMode ? formData.id : undefined
-        );
-
+        // Vérifier l'unicité du code
+        const isCodeUnique = await checkCodeUnique(formData.code, formData.id);
         if (!isCodeUnique) {
             toast({
                 title: "Erreur de validation",
@@ -282,36 +360,50 @@ const JournalTresorerie = () => {
                 ? `${API_BASE_URL}/journaux-tresorerie/${formData.id}`
                 : `${API_BASE_URL}/journaux-tresorerie`;
 
-            const method = editMode && formData.id ? "PUT" : "POST";
+            const method = editMode ? "PUT" : "POST";
+
+            const requestData = {
+                code: formData.code,
+                intitule: formData.intitule,
+                typeJournal: formData.typeJournal,
+                compteAssocieId: formData.compteAssocieId,
+                description: formData.description || null,
+                statut: formData.statut,
+                estVerrouille: formData.estVerrouille,
+            };
 
             const response = await fetch(url, {
                 method,
                 headers: getAuthHeaders(),
-                body: JSON.stringify(formData),
+                body: JSON.stringify(requestData),
             });
 
             const responseData = await response.json();
 
             if (!response.ok) {
-                if (response.status === 400 && responseData.errors) {
-                    Object.entries(responseData.errors).forEach(([field, message]) => {
-                        toast({
-                            title: "Erreur de validation",
-                            description: `${field}: ${message}`,
-                            variant: "destructive",
+                if (response.status === 400) {
+                    if (responseData.errors) {
+                        Object.entries(responseData.errors).forEach(([field, message]) => {
+                            toast({
+                                title: "Erreur de validation",
+                                description: `${field}: ${message}`,
+                                variant: "destructive",
+                            });
                         });
-                    });
-                } else if (responseData.error) {
-                    throw new Error(responseData.error);
+                    } else if (responseData.error) {
+                        throw new Error(responseData.error);
+                    }
+                } else if (response.status === 409) {
+                    throw new Error(responseData.message || "Conflit de données");
                 } else {
-                    throw new Error(`Erreur ${response.status}: ${response.statusText}`);
+                    throw new Error(responseData.message || `Erreur ${response.status}`);
                 }
                 return;
             }
 
             toast({
                 title: "Succès",
-                description: responseData.message || `Journal ${editMode ? "modifié" : "créé"} avec succès`,
+                description: responseData.message || (editMode ? "Journal modifié avec succès" : "Journal créé avec succès"),
             });
 
             resetForm();
@@ -319,8 +411,7 @@ const JournalTresorerie = () => {
 
         } catch (error) {
             console.error("Erreur lors de l'enregistrement:", error);
-            const errorMessage =
-                error instanceof Error ? error.message : "Une erreur inattendue est survenue";
+            const errorMessage = error instanceof Error ? error.message : "Erreur inconnue";
             setError(errorMessage);
 
             toast({
@@ -333,42 +424,29 @@ const JournalTresorerie = () => {
         }
     };
 
-    const validateCodeUnique = async (
-        code: string,
-        excludeId?: number
-    ): Promise<boolean> => {
-        try {
-            const params = new URLSearchParams();
-            if (excludeId) {
-                params.append("excludeId", excludeId.toString());
-            }
-
-            const response = await fetch(
-                `${API_BASE_URL}/journaux-tresorerie/validation/code/${code}?${params}`,
-                { headers: getAuthHeaders() }
-            );
-
-            if (response.ok) {
-                const data = await response.json();
-                return data.isUnique;
-            }
-            return false;
-        } catch {
-            return false;
-        }
-    };
-
     const handleEdit = (journal: JournalTresorerie) => {
         setFormData({
-            ...journal,
+            code: journal.code,
+            intitule: journal.intitule,
+            typeJournal: journal.typeJournal,
             compteAssocieId: journal.compteAssocie?.id || 0,
+            statut: journal.statut,
+            estVerrouille: journal.estVerrouille,
+            description: journal.description || "",
+            id: journal.id,
+            hasBeenUsed: journal.hasBeenUsed,
+            peutEtreModifie: journal.peutEtreModifie,
+            peutEtreDesactive: journal.peutEtreDesactive,
+            peutEtreUtilisePourSaisie: journal.peutEtreUtilisePourSaisie,
+            restrictionsMessage: journal.restrictionsMessage,
+            classeComptableRequise: journal.classeComptableRequise,
         });
         setEditMode(true);
         setShowForm(true);
     };
 
     const handleDelete = async (id: number) => {
-        if (!confirm("Êtes-vous sûr de vouloir supprimer ce journal ?")) {
+        if (!confirm("Êtes-vous sûr de vouloir supprimer ce journal ? Cette action est irréversible.")) {
             return;
         }
 
@@ -378,10 +456,10 @@ const JournalTresorerie = () => {
                 headers: getAuthHeaders(),
             });
 
-            const responseData = await response.json();
+            const data = await response.json();
 
             if (!response.ok) {
-                throw new Error(responseData.error || "Erreur lors de la suppression");
+                throw new Error(data.error || data.message || "Erreur lors de la suppression");
             }
 
             toast({
@@ -405,23 +483,20 @@ const JournalTresorerie = () => {
         }
 
         try {
-            const response = await fetch(
-                `${API_BASE_URL}/journaux-tresorerie/${id}/desactiver`,
-                {
-                    method: "PUT",
-                    headers: getAuthHeaders(),
-                }
-            );
+            const response = await fetch(`${API_BASE_URL}/journaux-tresorerie/${id}/desactiver`, {
+                method: "PUT",
+                headers: getAuthHeaders(),
+            });
 
-            const responseData = await response.json();
+            const data = await response.json();
 
             if (!response.ok) {
-                throw new Error(responseData.error || "Erreur lors de la désactivation");
+                throw new Error(data.error || data.message || "Erreur lors de la désactivation");
             }
 
             toast({
                 title: "Succès",
-                description: "Journal désactivé avec succès",
+                description: data.message || "Journal désactivé avec succès",
             });
 
             fetchData();
@@ -436,65 +511,55 @@ const JournalTresorerie = () => {
 
     const handleReactiver = async (id: number) => {
         try {
-            const response = await fetch(
-                `${API_BASE_URL}/journaux-tresorerie/${id}/reactiver`,
-                {
-                    method: "PUT",
-                    headers: getAuthHeaders(),
-                }
-            );
+            const response = await fetch(`${API_BASE_URL}/journaux-tresorerie/${id}/reactiver`, {
+                method: "PUT",
+                headers: getAuthHeaders(),
+            });
 
-            const responseData = await response.json();
+            const data = await response.json();
 
             if (!response.ok) {
-                throw new Error(responseData.error || "Erreur lors de la réactivation");
+                throw new Error(data.error || data.message || "Erreur lors de la réactivation");
             }
 
             toast({
                 title: "Succès",
-                description: "Journal réactivé avec succès",
+                description: data.message || "Journal réactivé avec succès",
             });
 
             fetchData();
         } catch (error) {
             toast({
                 title: "Erreur",
-                description: error instanceof Error ? error.message : "Erreur lors de la réactivation",
+                description: error instanceof Error ? error.message : "Erreur",
                 variant: "destructive",
             });
         }
     };
 
     const handleVerrouiller = async (id: number) => {
-        if (!confirm("Êtes-vous sûr de vouloir verrouiller ce journal ?")) {
-            return;
-        }
-
         try {
-            const response = await fetch(
-                `${API_BASE_URL}/journaux-tresorerie/${id}/verrouiller`,
-                {
-                    method: "PUT",
-                    headers: getAuthHeaders(),
-                }
-            );
+            const response = await fetch(`${API_BASE_URL}/journaux-tresorerie/${id}/verrouiller`, {
+                method: "PUT",
+                headers: getAuthHeaders(),
+            });
 
-            const responseData = await response.json();
+            const data = await response.json();
 
             if (!response.ok) {
-                throw new Error(responseData.error || "Erreur lors du verrouillage");
+                throw new Error(data.error || data.message || "Erreur lors du verrouillage");
             }
 
             toast({
                 title: "Succès",
-                description: "Journal verrouillé avec succès",
+                description: data.message || "Journal verrouillé avec succès",
             });
 
             fetchData();
         } catch (error) {
             toast({
                 title: "Erreur",
-                description: error instanceof Error ? error.message : "Erreur lors du verrouillage",
+                description: error instanceof Error ? error.message : "Erreur",
                 variant: "destructive",
             });
         }
@@ -502,30 +567,27 @@ const JournalTresorerie = () => {
 
     const handleDeverrouiller = async (id: number) => {
         try {
-            const response = await fetch(
-                `${API_BASE_URL}/journaux-tresorerie/${id}/deverrouiller`,
-                {
-                    method: "PUT",
-                    headers: getAuthHeaders(),
-                }
-            );
+            const response = await fetch(`${API_BASE_URL}/journaux-tresorerie/${id}/deverrouiller`, {
+                method: "PUT",
+                headers: getAuthHeaders(),
+            });
 
-            const responseData = await response.json();
+            const data = await response.json();
 
             if (!response.ok) {
-                throw new Error(responseData.error || "Erreur lors du déverrouillage");
+                throw new Error(data.error || data.message || "Erreur lors du déverrouillage");
             }
 
             toast({
                 title: "Succès",
-                description: "Journal déverrouillé avec succès",
+                description: data.message || "Journal déverrouillé avec succès",
             });
 
             fetchData();
         } catch (error) {
             toast({
                 title: "Erreur",
-                description: error instanceof Error ? error.message : "Erreur lors du déverrouillage",
+                description: error instanceof Error ? error.message : "Erreur",
                 variant: "destructive",
             });
         }
@@ -546,11 +608,19 @@ const JournalTresorerie = () => {
         setError(null);
     };
 
+    const resetFilters = () => {
+        setSearchTerm("");
+        setFilterType("all");
+        setFilterStatut("all");
+        setFilterVerrouille("all");
+        setFilterUsed("all");
+    };
+
     const getStatutBadge = (statut: string) => {
         switch (statut) {
             case "ACTIF":
                 return (
-                    <Badge variant="default" className="bg-green-100 text-green-800">
+                    <Badge variant="default" className="bg-green-100 text-green-800 border-green-200">
                         <CheckCircle className="w-3 h-3 mr-1" />
                         Actif
                     </Badge>
@@ -569,17 +639,13 @@ const JournalTresorerie = () => {
 
     const getTypeJournalBadge = (type: string) => {
         const colors: Record<string, string> = {
-            BANQUE: "bg-blue-100 text-blue-800",
-            CAISSE: "bg-yellow-100 text-yellow-800",
-            VIREMENT_INTERNE: "bg-purple-100 text-purple-800",
-            OD_TRESORERIE: "bg-green-100 text-green-800",
-            DIVERS: "bg-gray-100 text-gray-800",
+            BANQUE: "bg-blue-100 text-blue-800 border-blue-200",
+            OD_TRESORERIE: "bg-green-100 text-green-800 border-green-200",
+            DIVERS: "bg-gray-100 text-gray-800 border-gray-200",
         };
 
         const labels: Record<string, string> = {
             BANQUE: "Banque",
-            CAISSE: "Caisse",
-            VIREMENT_INTERNE: "Virement interne",
             OD_TRESORERIE: "OD Trésorerie",
             DIVERS: "Divers",
         };
@@ -591,17 +657,74 @@ const JournalTresorerie = () => {
         );
     };
 
+    const getVerrouilleBadge = (verrouille: boolean) => {
+        if (verrouille) {
+            return (
+                <Badge variant="outline" className="bg-yellow-100 text-yellow-800 border-yellow-200">
+                    <Lock className="w-3 h-3 mr-1" />
+                    Verrouillé
+                </Badge>
+            );
+        }
+        return (
+            <Badge variant="outline" className="bg-gray-100 text-gray-800 border-gray-200">
+                <Unlock className="w-3 h-3 mr-1" />
+                Déverrouillé
+            </Badge>
+        );
+    };
+
+    const getUsedBadge = (used: boolean) => {
+        if (used) {
+            return (
+                <Badge variant="outline" className="bg-purple-100 text-purple-800 border-purple-200">
+                    <CheckCircle className="w-3 h-3 mr-1" />
+                    Utilisé
+                </Badge>
+            );
+        }
+        return (
+            <Badge variant="outline" className="bg-gray-100 text-gray-800 border-gray-200">
+                Non utilisé
+            </Badge>
+        );
+    };
+
     // Filtrer les journaux
     const filteredJournaux = journaux.filter((journal) => {
-        const matchesSearch =
+        const matchesSearch = searchTerm === "" ||
             journal.code.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            journal.intitule.toLowerCase().includes(searchTerm.toLowerCase());
+            journal.intitule.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            (journal.compteAssocie?.intitule || "").toLowerCase().includes(searchTerm.toLowerCase());
 
-        const matchesType = !filterType || journal.typeJournal === filterType;
-        const matchesStatut = !filterStatut || journal.statut === filterStatut;
+        const matchesType = filterType === "all" || journal.typeJournal === filterType;
+        const matchesStatut = filterStatut === "all" || journal.statut === filterStatut;
+        const matchesVerrouille = filterVerrouille === "all" ||
+            (filterVerrouille === "verrouille" && journal.estVerrouille) ||
+            (filterVerrouille === "non_verrouille" && !journal.estVerrouille);
+        const matchesUsed = filterUsed === "all" ||
+            (filterUsed === "utilise" && journal.hasBeenUsed) ||
+            (filterUsed === "non_utilise" && !journal.hasBeenUsed);
 
-        return matchesSearch && matchesType && matchesStatut;
+        return matchesSearch && matchesType && matchesStatut && matchesVerrouille && matchesUsed;
     });
+
+    // Statistiques de filtrage (SANS CAISSE)
+    const getStats = () => {
+        const stats = {
+            total: journaux.length,
+            actifs: journaux.filter(j => j.statut === "ACTIF").length,
+            inactifs: journaux.filter(j => j.statut === "INACTIF").length,
+            banque: journaux.filter(j => j.typeJournal === "BANQUE").length,
+            od: journaux.filter(j => j.typeJournal === "OD_TRESORERIE").length,
+            divers: journaux.filter(j => j.typeJournal === "DIVERS").length,
+            verrouilles: journaux.filter(j => j.estVerrouille).length,
+            utilises: journaux.filter(j => j.hasBeenUsed).length,
+        };
+        return stats;
+    };
+
+    const stats = getStats();
 
     if (loading) {
         return (
@@ -636,9 +759,41 @@ const JournalTresorerie = () => {
                 </div>
             </div>
 
+            {/* Messages d'erreur */}
+            {error && (
+                <Alert variant="destructive">
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertDescription>{error}</AlertDescription>
+                </Alert>
+            )}
+
             {/* Filtres */}
             <Card>
-                <CardContent className="pt-6">
+                <CardHeader>
+                    <div className="flex justify-between items-center">
+                        <CardTitle>Filtres</CardTitle>
+                        <div className="flex gap-2">
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
+                                className="gap-2"
+                            >
+                                <Filter className="w-4 h-4" />
+                                {showAdvancedFilters ? "Filtres simples" : "Filtres avancés"}
+                            </Button>
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={resetFilters}
+                                className="gap-2"
+                            >
+                                Réinitialiser
+                            </Button>
+                        </div>
+                    </div>
+                </CardHeader>
+                <CardContent>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                         <div className="space-y-2">
                             <Label htmlFor="search">Recherche</Label>
@@ -646,7 +801,7 @@ const JournalTresorerie = () => {
                                 <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
                                 <Input
                                     id="search"
-                                    placeholder="Rechercher par code ou intitulé..."
+                                    placeholder="Code, intitulé ou compte..."
                                     value={searchTerm}
                                     onChange={(e) => setSearchTerm(e.target.value)}
                                     className="pl-9"
@@ -661,10 +816,12 @@ const JournalTresorerie = () => {
                                     <SelectValue placeholder="Tous les types" />
                                 </SelectTrigger>
                                 <SelectContent>
-                                    <SelectItem value="">Tous les types</SelectItem>
+                                    <SelectItem value="all">Tous les types</SelectItem>
                                     {typesJournal.map((type) => (
                                         <SelectItem key={type.value} value={type.value}>
-                                            {type.label}
+                                            {type.label} ({type.value === "BANQUE" ? stats.banque :
+                                            type.value === "OD_TRESORERIE" ? stats.od :
+                                                stats.divers})
                                         </SelectItem>
                                     ))}
                                 </SelectContent>
@@ -678,48 +835,167 @@ const JournalTresorerie = () => {
                                     <SelectValue placeholder="Tous les statuts" />
                                 </SelectTrigger>
                                 <SelectContent>
-                                    <SelectItem value="">Tous les statuts</SelectItem>
-                                    <SelectItem value="ACTIF">Actif</SelectItem>
-                                    <SelectItem value="INACTIF">Inactif</SelectItem>
+                                    <SelectItem value="all">Tous les statuts ({stats.total})</SelectItem>
+                                    <SelectItem value="ACTIF">Actif ({stats.actifs})</SelectItem>
+                                    <SelectItem value="INACTIF">Inactif ({stats.inactifs})</SelectItem>
                                 </SelectContent>
                             </Select>
                         </div>
                     </div>
+
+                    {/* Filtres avancés */}
+                    {showAdvancedFilters && (
+                        <div className="mt-4 pt-4 border-t grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div className="space-y-2">
+                                <Label htmlFor="filterVerrouille">État de verrouillage</Label>
+                                <Select value={filterVerrouille} onValueChange={setFilterVerrouille}>
+                                    <SelectTrigger>
+                                        <SelectValue placeholder="Tous" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="all">Tous ({stats.total})</SelectItem>
+                                        <SelectItem value="verrouille">Verrouillé ({stats.verrouilles})</SelectItem>
+                                        <SelectItem value="non_verrouille">Non verrouillé ({stats.total - stats.verrouilles})</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <div className="space-y-2">
+                                <Label htmlFor="filterUsed">État d'utilisation</Label>
+                                <Select value={filterUsed} onValueChange={setFilterUsed}>
+                                    <SelectTrigger>
+                                        <SelectValue placeholder="Tous" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="all">Tous ({stats.total})</SelectItem>
+                                        <SelectItem value="utilise">Utilisé ({stats.utilises})</SelectItem>
+                                        <SelectItem value="non_utilise">Non utilisé ({stats.total - stats.utilises})</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <div className="space-y-2">
+                                <Label>Résultats du filtrage</Label>
+                                <div className="p-3 bg-gray-50 rounded-md">
+                                    <div className="text-sm text-muted-foreground">
+                                        {filteredJournaux.length} journal{filteredJournaux.length !== 1 ? "x" : ""} correspondant
+                                        {filteredJournaux.length !== 1 ? "s" : ""} aux critères
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
                 </CardContent>
             </Card>
+
+            {/* Statistiques (SANS CAISSE) */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <Card>
+                    <CardContent className="pt-6">
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <p className="text-sm font-medium text-muted-foreground">Total</p>
+                                <p className="text-2xl font-bold">{stats.total}</p>
+                            </div>
+                            <div className="p-2 bg-blue-100 rounded-full">
+                                <Filter className="w-4 h-4 text-blue-600" />
+                            </div>
+                        </div>
+                    </CardContent>
+                </Card>
+                <Card>
+                    <CardContent className="pt-6">
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <p className="text-sm font-medium text-muted-foreground">Actifs</p>
+                                <p className="text-2xl font-bold text-green-600">{stats.actifs}</p>
+                            </div>
+                            <div className="p-2 bg-green-100 rounded-full">
+                                <Eye className="w-4 h-4 text-green-600" />
+                            </div>
+                        </div>
+                    </CardContent>
+                </Card>
+                <Card>
+                    <CardContent className="pt-6">
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <p className="text-sm font-medium text-muted-foreground">Inactifs</p>
+                                <p className="text-2xl font-bold text-gray-600">{stats.inactifs}</p>
+                            </div>
+                            <div className="p-2 bg-gray-100 rounded-full">
+                                <EyeOff className="w-4 h-4 text-gray-600" />
+                            </div>
+                        </div>
+                    </CardContent>
+                </Card>
+                <Card>
+                    <CardContent className="pt-6">
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <p className="text-sm font-medium text-muted-foreground">Verrouillés</p>
+                                <p className="text-2xl font-bold text-yellow-600">{stats.verrouilles}</p>
+                            </div>
+                            <div className="p-2 bg-yellow-100 rounded-full">
+                                <Lock className="w-4 h-4 text-yellow-600" />
+                            </div>
+                        </div>
+                    </CardContent>
+                </Card>
+            </div>
 
             {/* Tableau des journaux */}
             <Card>
                 <CardHeader>
-                    <CardTitle>Liste des journaux</CardTitle>
-                    <p className="text-sm text-muted-foreground">
-                        {filteredJournaux.length} journal{filteredJournaux.length !== 1 ? "x" : ""} trouvé
-                        {filteredJournaux.length !== 1 ? "s" : ""}
-                    </p>
+                    <div className="flex justify-between items-center">
+                        <div>
+                            <CardTitle>Liste des journaux</CardTitle>
+                            <p className="text-sm text-muted-foreground">
+                                {filteredJournaux.length} journal{filteredJournaux.length !== 1 ? "x" : ""} trouvé
+                                {filteredJournaux.length !== 1 ? "s" : ""}
+                            </p>
+                        </div>
+                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                            <div className="flex items-center gap-1">
+                                <div className="w-3 h-3 bg-green-100 border border-green-200 rounded-full"></div>
+                                Actif
+                            </div>
+                            <div className="flex items-center gap-1">
+                                <div className="w-3 h-3 bg-yellow-100 border border-yellow-200 rounded-full"></div>
+                                Verrouillé
+                            </div>
+                        </div>
+                    </div>
                 </CardHeader>
                 <CardContent>
-                    <div className="rounded-md border">
-                        <Table>
-                            <TableHeader>
-                                <TableRow>
-                                    <TableHead>Code</TableHead>
-                                    <TableHead>Intitulé</TableHead>
-                                    <TableHead>Type</TableHead>
-                                    <TableHead>Compte associé</TableHead>
-                                    <TableHead>Statut</TableHead>
-                                    <TableHead>Utilisation</TableHead>
-                                    <TableHead className="text-right">Actions</TableHead>
-                                </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                                {filteredJournaux.length === 0 ? (
+                    {filteredJournaux.length === 0 ? (
+                        <div className="text-center py-8 text-muted-foreground">
+                            <AlertCircle className="w-12 h-12 mx-auto mb-4 text-gray-400" />
+                            <p>Aucun journal ne correspond aux critères de recherche</p>
+                            <Button
+                                variant="link"
+                                onClick={resetFilters}
+                                className="mt-2"
+                            >
+                                Réinitialiser les filtres
+                            </Button>
+                        </div>
+                    ) : (
+                        <div className="rounded-md border">
+                            <Table>
+                                <TableHeader>
                                     <TableRow>
-                                        <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
-                                            Aucun journal trouvé
-                                        </TableCell>
+                                        <TableHead>Code</TableHead>
+                                        <TableHead>Intitulé</TableHead>
+                                        <TableHead>Type</TableHead>
+                                        <TableHead>Compte associé</TableHead>
+                                        <TableHead>Statut</TableHead>
+                                        <TableHead>État</TableHead>
+                                        <TableHead>Actions</TableHead>
                                     </TableRow>
-                                ) : (
-                                    filteredJournaux.map((journal) => (
+                                </TableHeader>
+                                <TableBody>
+                                    {filteredJournaux.map((journal) => (
                                         <TableRow key={journal.id}>
                                             <TableCell className="font-medium">
                                                 <div className="flex items-center gap-2">
@@ -734,51 +1010,38 @@ const JournalTresorerie = () => {
                                             <TableCell>
                                                 <div className="text-sm">
                                                     <div className="font-medium">
-                                                        {journal.compteAssocie?.codeCompte}
+                                                        {journal.compteAssocie?.codeCompte || "N/A"}
                                                     </div>
                                                     <div className="text-muted-foreground">
-                                                        {journal.compteAssocie?.intitule}
+                                                        {journal.compteAssocie?.intitule || "Non défini"}
                                                     </div>
                                                 </div>
                                             </TableCell>
                                             <TableCell>{getStatutBadge(journal.statut)}</TableCell>
                                             <TableCell>
-                                                <div className="text-sm">
-                                                    <div>Opérations: {journal.nombreOperations || 0}</div>
-                                                    <div>Écritures: {journal.nombreEcritures || 0}</div>
+                                                <div className="flex flex-col gap-1">
+                                                    {getVerrouilleBadge(journal.estVerrouille)}
+                                                    {getUsedBadge(!!journal.hasBeenUsed)}
                                                 </div>
                                             </TableCell>
-                                            <TableCell className="text-right">
-                                                <div className="flex justify-end gap-2">
-                                                    {journal.statut === "ACTIF" ? (
-                                                        <Button
-                                                            size="sm"
-                                                            variant="outline"
-                                                            onClick={() => handleDesactiver(journal.id!)}
-                                                            disabled={!journal.peutEtreSupprime}
-                                                            title={
-                                                                !journal.peutEtreSupprime
-                                                                    ? "Impossible de désactiver un journal utilisé"
-                                                                    : "Désactiver"
-                                                            }
-                                                        >
-                                                            <XCircle className="w-4 h-4" />
-                                                        </Button>
-                                                    ) : (
-                                                        <Button
-                                                            size="sm"
-                                                            variant="outline"
-                                                            onClick={() => handleReactiver(journal.id!)}
-                                                        >
-                                                            <CheckCircle className="w-4 h-4" />
-                                                        </Button>
-                                                    )}
+                                            <TableCell>
+                                                <div className="flex gap-2">
+                                                    <Button
+                                                        size="sm"
+                                                        variant="outline"
+                                                        onClick={() => handleEdit(journal)}
+                                                        disabled={!journal.peutEtreModifie}
+                                                        title={!journal.peutEtreModifie ? "Modification non autorisée" : "Modifier"}
+                                                    >
+                                                        <Edit className="w-4 h-4" />
+                                                    </Button>
 
                                                     {journal.estVerrouille ? (
                                                         <Button
                                                             size="sm"
                                                             variant="outline"
                                                             onClick={() => handleDeverrouiller(journal.id!)}
+                                                            title="Déverrouiller"
                                                         >
                                                             <Unlock className="w-4 h-4" />
                                                         </Button>
@@ -787,46 +1050,50 @@ const JournalTresorerie = () => {
                                                             size="sm"
                                                             variant="outline"
                                                             onClick={() => handleVerrouiller(journal.id!)}
+                                                            title="Verrouiller"
                                                         >
                                                             <Lock className="w-4 h-4" />
                                                         </Button>
                                                     )}
 
-                                                    <Button
-                                                        size="sm"
-                                                        variant="outline"
-                                                        onClick={() => handleEdit(journal)}
-                                                        disabled={!journal.peutEtreModifie}
-                                                        title={
-                                                            !journal.peutEtreModifie
-                                                                ? "Impossible de modifier un journal verrouillé ou utilisé"
-                                                                : "Modifier"
-                                                        }
-                                                    >
-                                                        <Edit className="w-4 h-4" />
-                                                    </Button>
+                                                    {journal.statut === "ACTIF" ? (
+                                                        <Button
+                                                            size="sm"
+                                                            variant="outline"
+                                                            onClick={() => handleDesactiver(journal.id!)}
+                                                            disabled={!journal.peutEtreDesactive}
+                                                            title={!journal.peutEtreDesactive ? "Désactivation non autorisée" : "Désactiver"}
+                                                        >
+                                                            <XCircle className="w-4 h-4" />
+                                                        </Button>
+                                                    ) : (
+                                                        <Button
+                                                            size="sm"
+                                                            variant="outline"
+                                                            onClick={() => handleReactiver(journal.id!)}
+                                                            title="Réactiver"
+                                                        >
+                                                            <CheckCircle className="w-4 h-4" />
+                                                        </Button>
+                                                    )}
 
                                                     <Button
                                                         size="sm"
                                                         variant="destructive"
                                                         onClick={() => handleDelete(journal.id!)}
                                                         disabled={!journal.peutEtreSupprime}
-                                                        title={
-                                                            !journal.peutEtreSupprime
-                                                                ? "Impossible de supprimer un journal utilisé"
-                                                                : "Supprimer"
-                                                        }
+                                                        title={!journal.peutEtreSupprime ? "Suppression non autorisée" : "Supprimer"}
                                                     >
                                                         <Trash2 className="w-4 h-4" />
                                                     </Button>
                                                 </div>
                                             </TableCell>
                                         </TableRow>
-                                    ))
-                                )}
-                            </TableBody>
-                        </Table>
-                    </div>
+                                    ))}
+                                </TableBody>
+                            </Table>
+                        </div>
+                    )}
                 </CardContent>
             </Card>
 
@@ -843,13 +1110,6 @@ const JournalTresorerie = () => {
                                 : "Remplissez les informations pour créer un nouveau journal de trésorerie"}
                         </DialogDescription>
                     </DialogHeader>
-
-                    {error && (
-                        <Alert variant="destructive">
-                            <AlertCircle className="h-4 w-4" />
-                            <AlertDescription>{error}</AlertDescription>
-                        </Alert>
-                    )}
 
                     <form onSubmit={handleSubmit} className="space-y-6">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -869,11 +1129,6 @@ const JournalTresorerie = () => {
                                 <p className="text-sm text-muted-foreground">
                                     2 à 10 caractères, lettres majuscules et chiffres uniquement
                                 </p>
-                                {editMode && formData.hasBeenUsed && (
-                                    <p className="text-sm text-yellow-600">
-                                        ⚠️ Le code ne peut plus être modifié car le journal a été utilisé
-                                    </p>
-                                )}
                             </div>
 
                             <div className="space-y-2">
@@ -882,7 +1137,7 @@ const JournalTresorerie = () => {
                                 </Label>
                                 <Select
                                     value={formData.typeJournal}
-                                    onValueChange={(value: JournalTresorerie["typeJournal"]) =>
+                                    onValueChange={(value: "BANQUE" | "OD_TRESORERIE" | "DIVERS") =>
                                         handleFormChange("typeJournal", value)
                                     }
                                     disabled={submitting}
@@ -898,9 +1153,6 @@ const JournalTresorerie = () => {
                                         ))}
                                     </SelectContent>
                                 </Select>
-                                <p className="text-sm text-muted-foreground">
-                                    Classe comptable requise: {getClasseRequise(formData.typeJournal)}
-                                </p>
                             </div>
                         </div>
 
@@ -931,21 +1183,28 @@ const JournalTresorerie = () => {
                                     <SelectValue placeholder="Sélectionner un compte comptable" />
                                 </SelectTrigger>
                                 <SelectContent>
-                                    {getPlansComptablesFiltres().map((pc) => (
-                                        <SelectItem key={pc.id} value={pc.id.toString()}>
-                                            {pc.codeFormate} - {pc.intitule} ({pc.typeCompte})
+                                    {getPlansComptablesFiltres().length > 0 ? (
+                                        getPlansComptablesFiltres().map((pc) => (
+                                            <SelectItem key={pc.id} value={pc.id.toString()}>
+                                                {pc.codeCompte} - {pc.intitule}
+                                                {pc.societe && (
+                                                    <span className="text-xs text-muted-foreground ml-1">
+                                                        ({pc.societe.nom})
+                                                    </span>
+                                                )}
+                                            </SelectItem>
+                                        ))
+                                    ) : (
+                                        <SelectItem value="0" disabled>
+                                            Aucun compte disponible pour ce type
                                         </SelectItem>
-                                    ))}
+                                    )}
                                 </SelectContent>
                             </Select>
-                            {editMode && formData.hasBeenUsed && (
-                                <p className="text-sm text-yellow-600">
-                                    ⚠️ Le compte associé ne peut plus être modifié car le journal a été utilisé
-                                </p>
-                            )}
                             {getPlansComptablesFiltres().length === 0 && (
                                 <p className="text-sm text-destructive">
-                                    Aucun compte comptable de classe {getClasseRequise(formData.typeJournal)} disponible
+                                    Aucun compte comptable de classe {getClasseRequise(formData.typeJournal)} disponible.
+                                    Assurez-vous que la société a des comptes actifs de la classe appropriée.
                                 </p>
                             )}
                         </div>
@@ -955,7 +1214,7 @@ const JournalTresorerie = () => {
                                 <Label htmlFor="statut">Statut</Label>
                                 <Select
                                     value={formData.statut}
-                                    onValueChange={(value: JournalTresorerie["statut"]) =>
+                                    onValueChange={(value: "ACTIF" | "INACTIF") =>
                                         handleFormChange("statut", value)
                                     }
                                     disabled={submitting}
@@ -974,7 +1233,7 @@ const JournalTresorerie = () => {
                                 <div className="space-y-0.5">
                                     <Label htmlFor="estVerrouille">Journal verrouillé</Label>
                                     <p className="text-sm text-muted-foreground">
-                                        Empêche les modifications non autorisées
+                                        Empêche les modifications
                                     </p>
                                 </div>
                                 <Switch
@@ -992,11 +1251,22 @@ const JournalTresorerie = () => {
                                 id="description"
                                 value={formData.description || ""}
                                 onChange={(e) => handleFormChange("description", e.target.value)}
-                                placeholder="Description du journal (facultatif)"
+                                placeholder="Description (facultatif)"
                                 rows={3}
                                 disabled={submitting}
                             />
                         </div>
+
+                        {editMode && formData.restrictionsMessage && (
+                            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                                <div className="flex items-start">
+                                    <AlertCircle className="h-5 w-5 text-yellow-600 mt-0.5 mr-3" />
+                                    <div className="text-yellow-800 text-sm">
+                                        <strong className="font-semibold">Restrictions :</strong> {formData.restrictionsMessage}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
 
                         <div className="flex justify-end gap-4 pt-4">
                             <Button
@@ -1007,7 +1277,11 @@ const JournalTresorerie = () => {
                             >
                                 Annuler
                             </Button>
-                            <Button type="submit" disabled={submitting} className="gap-2">
+                            <Button
+                                type="submit"
+                                disabled={submitting || !formData.compteAssocieId}
+                                className="gap-2"
+                            >
                                 {submitting ? (
                                     <>
                                         <Loader2 className="w-4 h-4 animate-spin" />
@@ -1016,7 +1290,7 @@ const JournalTresorerie = () => {
                                 ) : (
                                     <>
                                         <Save className="w-4 h-4" />
-                                        {editMode ? "Modifier le journal" : "Créer le journal"}
+                                        {editMode ? "Modifier" : "Créer"}
                                     </>
                                 )}
                             </Button>
@@ -1025,17 +1299,19 @@ const JournalTresorerie = () => {
                 </DialogContent>
             </Dialog>
 
-            {/* Informations sur les règles de gestion */}
+            {/* Aide */}
             <Alert className="bg-blue-50 border-blue-200">
                 <AlertCircle className="h-4 w-4 text-blue-600" />
                 <AlertDescription className="text-blue-800">
-                    <div className="font-semibold mb-2">Règles de gestion :</div>
+                    <div className="font-semibold mb-2">Informations :</div>
                     <ul className="text-sm space-y-1 list-disc list-inside">
-                        <li>Le code journal doit être unique et ne peut être modifié après utilisation</li>
-                        <li>Le compte associé doit être un compte de trésorerie (classe 5)</li>
-                        <li>Un journal utilisé ne peut être supprimé, seulement désactivé</li>
-                        <li>Un journal verrouillé ne peut être modifié que par des utilisateurs autorisés</li>
-                        <li>Cohérence comptable : Banque → classe 52, Caisse → classe 57, Autres → classe 58</li>
+                        <li>Le code journal doit être unique (2-10 caractères, majuscules/chiffres)</li>
+                        <li>Le compte associé doit être de la classe OHADA correspondante : Banque (52...)</li>
+                        <li>Types disponibles : Banque (classe 52), OD Trésorerie (classe 58), Divers (classe 58)</li>
+                        <li>Un journal utilisé ne peut être supprimé</li>
+                        <li>Les journaux inactifs n'apparaissent pas dans les listes de saisie</li>
+                        <li>Un journal verrouillé ne peut être modifié</li>
+                        <li>Seuls les journaux de votre société sont affichés</li>
                     </ul>
                 </AlertDescription>
             </Alert>

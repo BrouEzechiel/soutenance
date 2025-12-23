@@ -10,63 +10,67 @@ import { useToast } from "@/hooks/use-toast";
 import { useState, useEffect } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
-// Types pour les données de l'API
+// Types alignés avec l'entité CompteTresorerie
 interface PlanComptable {
     id: number;
     codeCompte: string;
     intitule: string;
     typeCompte: string;
-    codeFormate: string;
     statut?: string;
+    codeFormate?: string;
 }
 
 interface Banque {
     id: number;
     nom: string;
-    code: string;
+    codeBanque?: string;
     adresse?: string;
     telephone?: string;
     statut?: string;
 }
 
-interface Devise {
+interface JournalTresorerie {
     id: number;
     code: string;
     intitule: string;
-    symbole: string;
-    statut: string;
+    type?: string;
+    statut?: string;
+}
+
+interface Utilisateur {
+    id: number;
+    username: string;
+    firstName?: string;
+    lastName?: string;
+    fullName?: string;
+    email?: string;
+    statut?: string;
 }
 
 interface CompteTresorerie {
     id?: number;
-    nom: string;
-    typeCompte: 'BANQUE' | 'CAISSE' | 'COMPTE_COURANT' | 'MOBILE_MONEY' | 'AUTRE';
-    numeroCompteComptable: string;
-    planComptableId: number;
+    intitule: string;
+    typeCompte: 'courant' | 'epargne' | 'transit' | 'provision' | 'autre';
+    numeroCompte: string;
+    bic?: string;
     banqueId?: number;
-    numeroCompteBancaire?: string;
-    deviseId: number;
-    soldeOuverture: number;
-    soldeActuel: number;
+    planComptableId: number;
+    journalTresorerieId: number;
+    gestionnaireId: number;
+    superieurHierarchiqueId?: number;
+    soldeOuverture: string;
+    soldeActuel: string;
     estPrincipal: boolean;
-    statut: 'ACTIF' | 'INACTIF';
+    statut: 'ACTIF' | 'INACTIF' | 'CLOTURE';
     description?: string;
-}
-
-// Type pour les résultats de test API
-interface ApiTestResult {
-    name: string;
-    url: string;
-    status: number;
-    ok: boolean;
-    error?: unknown;
+    contactGestionnaire?: string;
+    fonctionGestionnaire?: string;
 }
 
 const API_BASE_URL = 'http://127.0.0.1:8000/api';
 
 // Fonction utilitaire pour récupérer les headers d'authentification
 const getAuthHeaders = (contentType: string | null = 'application/json'): HeadersInit => {
-    // IMPORTANT: Votre login stocke sous 'token', pas 'authToken'
     const token = localStorage.getItem('token');
 
     const headers: HeadersInit = {
@@ -84,87 +88,73 @@ const getAuthHeaders = (contentType: string | null = 'application/json'): Header
     return headers;
 };
 
-// Données de démonstration au cas où l'API serait indisponible
+// Données de démonstration
 const DEMO_PLAN_COMPTABLES: PlanComptable[] = [
-    { id: 1, codeCompte: "512", intitule: "Banques", typeCompte: "BANQUE", codeFormate: "512", statut: "ACTIF" },
-    { id: 2, codeCompte: "53", intitule: "Caisse", typeCompte: "CAISSE", codeFormate: "53", statut: "ACTIF" },
-    { id: 3, codeCompte: "58", intitule: "Virements internes", typeCompte: "COMPTE_COURANT", codeFormate: "58", statut: "ACTIF" },
+    { id: 1, codeCompte: "512", intitule: "Banques", typeCompte: "BANQUE", statut: "ACTIF", codeFormate: "512" },
+    { id: 2, codeCompte: "53", intitule: "Caisse", typeCompte: "CAISSE", statut: "ACTIF", codeFormate: "53" },
+    { id: 3, codeCompte: "58", intitule: "Virements internes", typeCompte: "COMPTE_COURANT", statut: "ACTIF", codeFormate: "58" },
 ];
 
 const DEMO_BANQUES: Banque[] = [
-    { id: 1, nom: "BANQUE POPULAIRE", code: "BP", adresse: "Casablanca", telephone: "0522-123456", statut: "ACTIF" },
-    { id: 2, nom: "ATTIJARIWAFA BANK", code: "AWB", adresse: "Casablanca", telephone: "0522-654321", statut: "ACTIF" },
-    { id: 3, nom: "BANK OF AFRICA", code: "BOA", adresse: "Rabat", telephone: "0537-789012", statut: "ACTIF" },
+    { id: 1, nom: "BANQUE POPULAIRE", codeBanque: "BP", adresse: "Casablanca", telephone: "0522-123456", statut: "ACTIF" },
+    { id: 2, nom: "ATTIJARIWAFA BANK", codeBanque: "AWB", adresse: "Casablanca", telephone: "0522-654321", statut: "ACTIF" },
+    { id: 3, nom: "BANK OF AFRICA", codeBanque: "BOA", adresse: "Rabat", telephone: "0537-789012", statut: "ACTIF" },
 ];
 
-const DEMO_DEVISES: Devise[] = [
-    { id: 1, code: "MAD", intitule: "Dirham marocain", symbole: "DH", statut: "ACTIF" },
-    { id: 2, code: "EUR", intitule: "Euro", symbole: "€", statut: "ACTIF" },
-    { id: 3, code: "USD", intitule: "Dollar américain", symbole: "$", statut: "ACTIF" },
+const DEMO_JOURNAUX_TRESORERIE: JournalTresorerie[] = [
+    { id: 1, code: "BQ", intitule: "Journal de banque", type: "BANQUE", statut: "ACTIF" },
+    { id: 2, code: "CA", intitule: "Journal de caisse", type: "CAISSE", statut: "ACTIF" },
+    { id: 3, code: "OD", intitule: "Journal des opérations diverses", type: "DIVERS", statut: "ACTIF" },
 ];
+
+const DEMO_UTILISATEURS: Utilisateur[] = [
+    { id: 1, username: "admin", firstName: "Admin", lastName: "Système", fullName: "Administrateur Système", email: "admin@example.com", statut: "ACTIF" },
+    { id: 2, username: "finance", firstName: "Mohamed", lastName: "Finance", fullName: "Mohamed Finance", email: "finance@example.com", statut: "ACTIF" },
+    { id: 3, username: "comptable", firstName: "Fatima", lastName: "Comptable", fullName: "Fatima Comptable", email: "comptable@example.com", statut: "ACTIF" },
+];
+
+const TYPES_COMPTE = {
+    courant: 'Compte courant',
+    epargne: 'Compte épargne',
+    transit: 'Compte de transit',
+    provision: 'Compte de provision',
+    autre: 'Autre compte'
+};
 
 const ComptesTresorerie = () => {
     const { toast } = useToast();
     const [compte, setCompte] = useState<CompteTresorerie>({
-        nom: '',
-        typeCompte: 'BANQUE',
-        numeroCompteComptable: '',
-        planComptableId: 0,
+        intitule: '',
+        typeCompte: 'courant',
+        numeroCompte: '',
+        bic: '',
         banqueId: undefined,
-        numeroCompteBancaire: '',
-        deviseId: 0,
-        soldeOuverture: 0,
-        soldeActuel: 0,
+        planComptableId: 0,
+        journalTresorerieId: 0,
+        gestionnaireId: 0,
+        superieurHierarchiqueId: undefined,
+        soldeOuverture: '0.00',
+        soldeActuel: '0.00',
         estPrincipal: false,
         statut: 'ACTIF',
-        description: ''
+        description: '',
+        contactGestionnaire: '',
+        fonctionGestionnaire: ''
     });
 
     const [planComptables, setPlanComptables] = useState<PlanComptable[]>([]);
     const [banques, setBanques] = useState<Banque[]>([]);
-    const [devises, setDevises] = useState<Devise[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [submitting, setSubmitting] = useState(false);
+    const [journauxTresorerie, setJournauxTresorerie] = useState<JournalTresorerie[]>([]);
+    const [utilisateurs, setUtilisateurs] = useState<Utilisateur[]>([]);
+    const [loading, setLoading] = useState<boolean>(true);
+    const [submitting, setSubmitting] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
-    const [useDemoData, setUseDemoData] = useState(false);
+    const [useDemoData, setUseDemoData] = useState<boolean>(false);
     const [debugInfo, setDebugInfo] = useState<string>('');
 
     useEffect(() => {
         fetchData();
     }, []);
-
-    // Fonction pour tester la connexion à l'API
-    const testApiConnection = async (): Promise<ApiTestResult[]> => {
-        const endpoints = [
-            { name: 'Plan comptable', url: `${API_BASE_URL}/plan-comptable` },
-            { name: 'Banques', url: `${API_BASE_URL}/banques` },
-            { name: 'Devises', url: `${API_BASE_URL}/devises` },
-            { name: 'Comptes trésorerie', url: `${API_BASE_URL}/comptes-tresorerie` },
-        ];
-
-        const results: ApiTestResult[] = [];
-
-        for (const endpoint of endpoints) {
-            try {
-                const response = await fetch(endpoint.url, { headers: getAuthHeaders() });
-                results.push({
-                    name: endpoint.name,
-                    url: endpoint.url,
-                    status: response.status,
-                    ok: response.ok
-                });
-            } catch (err) {
-                results.push({
-                    name: endpoint.name,
-                    url: endpoint.url,
-                    status: 0,
-                    ok: false,
-                    error: err
-                });
-            }
-        }
-        return results;
-    };
 
     const fetchData = async () => {
         try {
@@ -179,7 +169,8 @@ const ComptesTresorerie = () => {
                 setUseDemoData(true);
                 setPlanComptables(DEMO_PLAN_COMPTABLES);
                 setBanques(DEMO_BANQUES);
-                setDevises(DEMO_DEVISES);
+                setJournauxTresorerie(DEMO_JOURNAUX_TRESORERIE);
+                setUtilisateurs(DEMO_UTILISATEURS);
 
                 toast({
                     title: "Non connecté",
@@ -190,90 +181,214 @@ const ComptesTresorerie = () => {
             }
 
             setDebugInfo(`Token trouvé: ${token.substring(0, 20)}...`);
-
-            // Tester la connexion API
-            const testResults = await testApiConnection();
-            const apiStatus = testResults.filter(r => r.ok).length > 0;
-
-            if (!apiStatus) {
-                setDebugInfo('API non accessible, utilisation des données de démonstration');
-                setUseDemoData(true);
-                setPlanComptables(DEMO_PLAN_COMPTABLES);
-                setBanques(DEMO_BANQUES);
-                setDevises(DEMO_DEVISES);
-
-                toast({
-                    title: "Mode démonstration",
-                    description: "L'API n'est pas accessible. Utilisation des données de démonstration.",
-                    variant: "default"
-                });
-                return;
-            }
-
             const headers = getAuthHeaders();
 
             // 1. Charger les plans comptables ACTIFS
-            // CORRECTION: Utiliser l'endpoint correct: /api/plan-comptable (sans 's')
-            const planComptableResponse = await fetch(`${API_BASE_URL}/plan-comptable/actifs`, { headers });
-
-            if (!planComptableResponse.ok) {
-                // Essayer sans le chemin /actifs
-                const planComptableResponse2 = await fetch(`${API_BASE_URL}/plan-comptable`, { headers });
-                if (!planComptableResponse2.ok) {
-                    throw new Error(`Erreur ${planComptableResponse2.status} lors du chargement des comptes comptables`);
+            try {
+                const planComptableResponse = await fetch(`${API_BASE_URL}/plan-comptables/actifs`, { headers });
+                if (planComptableResponse.ok) {
+                    const planComptableData = await planComptableResponse.json();
+                    const dataArray = planComptableData.data || [];
+                    setPlanComptables(dataArray as PlanComptable[]);
+                    setDebugInfo('Plan comptables chargés');
+                } else {
+                    // Essayer sans le chemin /actifs
+                    const planComptableResponse2 = await fetch(`${API_BASE_URL}/plan-comptables`, { headers });
+                    if (planComptableResponse2.ok) {
+                        const planComptableData2 = await planComptableResponse2.json();
+                        const dataArray = planComptableData2.data || [];
+                        const filteredData = dataArray.filter((p: any) => !p.statut || p.statut === 'ACTIF');
+                        setPlanComptables(filteredData as PlanComptable[]);
+                    } else {
+                        setDebugInfo('Échec chargement plan comptables, utilisation démo');
+                        setPlanComptables(DEMO_PLAN_COMPTABLES);
+                    }
                 }
-                const planComptableData2 = await planComptableResponse2.json();
-                // Filtrer les actifs côté client si nécessaire
-                const filteredData = Array.isArray(planComptableData2)
-                    ? planComptableData2.filter((p: PlanComptable) => !p.statut || p.statut === 'ACTIF')
-                    : (planComptableData2.data || []).filter((p: PlanComptable) => !p.statut || p.statut === 'ACTIF');
-                setPlanComptables(filteredData);
-            } else {
-                const planComptableData = await planComptableResponse.json();
-                const dataArray = Array.isArray(planComptableData)
-                    ? planComptableData
-                    : (planComptableData.data || []);
-                setPlanComptables(dataArray);
+            } catch (error) {
+                console.error('Erreur chargement plan comptable:', error);
+                setPlanComptables(DEMO_PLAN_COMPTABLES);
             }
 
             // 2. Charger les banques ACTIVES
-            const banqueResponse = await fetch(`${API_BASE_URL}/banques`, { headers });
-            if (banqueResponse.ok) {
-                const banqueData = await banqueResponse.json();
-                const banquesArray = Array.isArray(banqueData) ? banqueData : (banqueData.data || []);
-                // Filtrer les banques actives si la propriété statut existe
-                const activeBanques = banquesArray.filter((b: Banque) => !b.statut || b.statut === 'ACTIF');
-                setBanques(activeBanques);
+            try {
+                const banqueResponse = await fetch(`${API_BASE_URL}/banques`, { headers });
+                if (banqueResponse.ok) {
+                    const banqueData = await banqueResponse.json();
+                    const banquesArray = banqueData.data || [];
+                    const activeBanques = banquesArray.filter((b: any) => !b.statut || b.statut === 'ACTIF');
+                    setBanques(activeBanques as Banque[]);
+                    setDebugInfo('Banques chargées');
+                } else {
+                    setBanques(DEMO_BANQUES);
+                }
+            } catch (error) {
+                console.error('Erreur chargement banques:', error);
+                setBanques(DEMO_BANQUES);
             }
 
-            // 3. Charger les devises ACTIVES
-            const deviseResponse = await fetch(`${API_BASE_URL}/devises/actives`, { headers });
-            if (deviseResponse.ok) {
-                const deviseData = await deviseResponse.json();
-                const devisesArray = Array.isArray(deviseData) ? deviseData : (deviseData.data || []);
-                setDevises(devisesArray);
-            } else {
-                // Essayer l'endpoint standard
-                const deviseResponse2 = await fetch(`${API_BASE_URL}/devises`, { headers });
-                if (deviseResponse2.ok) {
-                    const deviseData2 = await deviseResponse2.json();
-                    const devisesArray = Array.isArray(deviseData2) ? deviseData2 : (deviseData2.data || []);
-                    const activeDevises = devisesArray.filter((d: Devise) => d.statut === 'ACTIF');
-                    setDevises(activeDevises);
+            // 3. Charger les journaux de trésorerie
+            try {
+                const journalResponse = await fetch(`${API_BASE_URL}/journaux-tresorerie`, { headers });
+                if (journalResponse.ok) {
+                    const journalData = await journalResponse.json();
+                    console.log('Journaux reçus:', journalData);
+
+                    let journauxArray: any[] = [];
+                    if (journalData.data && Array.isArray(journalData.data)) {
+                        journauxArray = journalData.data;
+                    } else if (Array.isArray(journalData)) {
+                        journauxArray = journalData;
+                    }
+
+                    const activeJournaux = journauxArray.filter((j: any) =>
+                        !j.statut || j.statut === 'ACTIF' || j.statut === 'actif'
+                    );
+
+                    setJournauxTresorerie(activeJournaux as JournalTresorerie[]);
+                    setDebugInfo(`Journaux chargés: ${activeJournaux.length}`);
+                } else {
+                    console.warn('Réponse journaux non OK:', journalResponse.status);
+                    setJournauxTresorerie(DEMO_JOURNAUX_TRESORERIE);
                 }
+            } catch (error) {
+                console.error('Erreur chargement journaux:', error);
+                setJournauxTresorerie(DEMO_JOURNAUX_TRESORERIE);
+            }
+
+            // 4. Charger les utilisateurs - CORRECTION AMÉLIORÉE
+            try {
+                const utilisateurResponse = await fetch(`${API_BASE_URL}/utilisateurs/list`, { headers });
+
+                console.log('Réponse utilisateurs status:', utilisateurResponse.status);
+
+                if (utilisateurResponse.ok) {
+                    const utilisateurData = await utilisateurResponse.json();
+                    console.log('Données utilisateurs reçues (brutes):', utilisateurData);
+
+                    let utilisateursArray: any[] = [];
+
+                    // Essayer différentes structures de réponse
+                    if (Array.isArray(utilisateurData)) {
+                        // Cas 1: Tableau direct
+                        utilisateursArray = utilisateurData;
+                        console.log('Cas 1: Tableau direct détecté');
+                    } else if (utilisateurData && typeof utilisateurData === 'object') {
+                        // Cas 2: Objet avec clé 'data'
+                        if (utilisateurData.data && Array.isArray(utilisateurData.data)) {
+                            utilisateursArray = utilisateurData.data;
+                            console.log('Cas 2: Objet avec clé "data" détecté');
+                        }
+                        // Cas 3: Objet avec clé 'utilisateurs'
+                        else if (utilisateurData.utilisateurs && Array.isArray(utilisateurData.utilisateurs)) {
+                            utilisateursArray = utilisateurData.utilisateurs;
+                            console.log('Cas 3: Objet avec clé "utilisateurs" détecté');
+                        }
+                        // Cas 4: Autre structure
+                        else {
+                            console.log('Cas 4: Autre structure, conversion en tableau');
+                            utilisateursArray = [utilisateurData];
+                        }
+                    }
+
+                    console.log('Utilisateurs après parsing:', utilisateursArray);
+
+                    if (utilisateursArray.length > 0) {
+                        // Filtrer les utilisateurs actifs
+                        const activeUtilisateurs = utilisateursArray.filter((u: any) => {
+                            const statut = u.statut?.toString().toUpperCase();
+                            const isActive = !statut ||
+                                statut === 'ACTIF' ||
+                                statut === 'ACTIVE' ||
+                                u.estActif === true ||
+                                u.isActive === true ||
+                                u.active === true;
+                            return isActive;
+                        });
+
+                        console.log('Utilisateurs actifs filtrés:', activeUtilisateurs);
+
+                        // Normaliser les données
+                        const normalizedUtilisateurs = activeUtilisateurs.map((u: any) => ({
+                            id: u.id,
+                            username: u.username || u.userName || u.email || 'Utilisateur',
+                            firstName: u.firstName || u.first_name || u.prenom || '',
+                            lastName: u.lastName || u.last_name || u.nom || '',
+                            fullName: u.fullName || u.full_name ||
+                                (u.firstName && u.lastName ? `${u.firstName} ${u.lastName}` : u.username),
+                            email: u.email || '',
+                            statut: u.statut || 'ACTIF'
+                        }));
+
+                        if (normalizedUtilisateurs.length > 0) {
+                            setUtilisateurs(normalizedUtilisateurs as Utilisateur[]);
+                            setDebugInfo(`Utilisateurs chargés: ${normalizedUtilisateurs.length}`);
+                        } else {
+                            console.warn('Aucun utilisateur actif trouvé après normalisation');
+                            setUtilisateurs(DEMO_UTILISATEURS);
+                        }
+                    } else {
+                        console.warn('Aucun utilisateur trouvé dans la réponse');
+                        setUtilisateurs(DEMO_UTILISATEURS);
+                    }
+
+                } else if (utilisateurResponse.status === 403) {
+                    console.warn('Permission refusée pour /utilisateurs/list (403)');
+
+                    // Essayer d'obtenir l'utilisateur courant
+                    try {
+                        const currentUserResponse = await fetch(`${API_BASE_URL}/me`, { headers });
+                        if (currentUserResponse.ok) {
+                            const currentUser = await currentUserResponse.json();
+                            console.log('Utilisateur courant:', currentUser);
+
+                            const normalizedUser = {
+                                id: currentUser.id,
+                                username: currentUser.username || currentUser.email,
+                                firstName: currentUser.firstName || currentUser.prenom || '',
+                                lastName: currentUser.lastName || currentUser.nom || '',
+                                fullName: currentUser.fullName ||
+                                    (currentUser.firstName && currentUser.lastName ?
+                                        `${currentUser.firstName} ${currentUser.lastName}` :
+                                        currentUser.username),
+                                email: currentUser.email || '',
+                                statut: currentUser.statut || 'ACTIF'
+                            };
+
+                            setUtilisateurs([normalizedUser] as Utilisateur[]);
+                            setDebugInfo('Utilisateur courant chargé');
+                        } else {
+                            console.warn('Impossible de récupérer l\'utilisateur courant');
+                            setUtilisateurs(DEMO_UTILISATEURS);
+                        }
+                    } catch (userError) {
+                        console.error('Erreur récupération utilisateur courant:', userError);
+                        setUtilisateurs(DEMO_UTILISATEURS);
+                    }
+                } else {
+                    console.warn('Réponse utilisateurs non OK:', utilisateurResponse.status);
+                    setUtilisateurs(DEMO_UTILISATEURS);
+                }
+            } catch (error) {
+                console.error('Erreur détaillée chargement utilisateurs:', error);
+                setUtilisateurs(DEMO_UTILISATEURS);
             }
 
             // Définir les valeurs par défaut
             const currentPlanComptables = planComptables.length > 0 ? planComptables : DEMO_PLAN_COMPTABLES;
-            const currentDevises = devises.length > 0 ? devises : DEMO_DEVISES;
+            const currentJournaux = journauxTresorerie.length > 0 ? journauxTresorerie : DEMO_JOURNAUX_TRESORERIE;
+            const currentUtilisateurs = utilisateurs.length > 0 ? utilisateurs : DEMO_UTILISATEURS;
 
-            if (currentPlanComptables.length > 0 && currentDevises.length > 0) {
-                setCompte(prev => ({
-                    ...prev,
-                    planComptableId: currentPlanComptables[0].id,
-                    deviseId: currentDevises[0].id
-                }));
-            }
+            // S'assurer que les IDs par défaut sont valides
+            const defaultPlanComptableId = currentPlanComptables[0]?.id || 0;
+            const defaultJournalId = currentJournaux[0]?.id || 0;
+            const defaultUtilisateurId = currentUtilisateurs[0]?.id || 0;
+
+            setCompte(prev => ({
+                ...prev,
+                planComptableId: defaultPlanComptableId,
+                journalTresorerieId: defaultJournalId,
+                gestionnaireId: defaultUtilisateurId
+            }));
 
             setDebugInfo('Données chargées avec succès');
 
@@ -283,11 +398,11 @@ const ComptesTresorerie = () => {
             setError(errorMessage);
             setDebugInfo(`Erreur: ${errorMessage}`);
 
-            // Basculer en mode démonstration
             setUseDemoData(true);
             setPlanComptables(DEMO_PLAN_COMPTABLES);
             setBanques(DEMO_BANQUES);
-            setDevises(DEMO_DEVISES);
+            setJournauxTresorerie(DEMO_JOURNAUX_TRESORERIE);
+            setUtilisateurs(DEMO_UTILISATEURS);
 
             toast({
                 title: "Mode démonstration activé",
@@ -305,16 +420,16 @@ const ComptesTresorerie = () => {
             [field]: value
         }));
 
-        if (field === 'typeCompte' && value !== 'BANQUE') {
+        if (field === 'typeCompte' && value === 'autre') {
             setCompte(prev => ({
                 ...prev,
                 banqueId: undefined,
-                numeroCompteBancaire: ''
+                bic: ''
             }));
         }
 
         if (field === 'soldeOuverture') {
-            const newValue = parseFloat(value) || 0;
+            const newValue = value || '0.00';
             setCompte(prev => ({
                 ...prev,
                 soldeActuel: newValue
@@ -325,33 +440,34 @@ const ComptesTresorerie = () => {
     const validateForm = (): string[] => {
         const errors: string[] = [];
 
-        if (!compte.nom.trim()) {
-            errors.push("Le nom du compte est obligatoire");
+        if (!compte.intitule.trim()) {
+            errors.push("L'intitulé du compte est obligatoire");
         }
 
-        if (!compte.numeroCompteComptable.trim()) {
-            errors.push("Le numéro de compte comptable est obligatoire");
+        if (!compte.numeroCompte.trim()) {
+            errors.push("Le numéro de compte est obligatoire");
         }
 
         if (!compte.planComptableId) {
             errors.push("Le compte comptable associé est obligatoire");
         }
 
-        if (!compte.deviseId) {
-            errors.push("La devise est obligatoire");
+        if (!compte.journalTresorerieId) {
+            errors.push("Le journal de trésorerie est obligatoire");
         }
 
-        if (compte.typeCompte === 'BANQUE') {
-            if (!compte.banqueId) {
-                errors.push("La banque est obligatoire pour un compte de type BANQUE");
-            }
-            if (!compte.numeroCompteBancaire?.trim()) {
-                errors.push("Le numéro de compte bancaire est obligatoire pour un compte de type BANQUE");
-            }
+        if (!compte.gestionnaireId) {
+            errors.push("Le gestionnaire est obligatoire");
         }
 
-        if (compte.soldeOuverture < 0) {
-            errors.push("Le solde d'ouverture ne peut pas être négatif");
+        const typesRequireBanque = ['courant', 'epargne', 'transit', 'provision'];
+        if (typesRequireBanque.includes(compte.typeCompte) && !compte.banqueId) {
+            errors.push("La banque est obligatoire pour ce type de compte");
+        }
+
+        const solde = parseFloat(compte.soldeOuverture);
+        if (isNaN(solde)) {
+            errors.push("Le solde d'ouverture doit être un nombre valide");
         }
 
         return errors;
@@ -367,14 +483,12 @@ const ComptesTresorerie = () => {
                 variant: "default"
             });
 
-            // Simuler un enregistrement réussi
             setTimeout(() => {
                 toast({
                     title: "Succès (démo)",
                     description: "Le compte de trésorerie a été créé avec succès (mode démonstration)",
                 });
 
-                // Réinitialiser le formulaire
                 resetForm();
             }, 1000);
 
@@ -397,19 +511,28 @@ const ComptesTresorerie = () => {
         setError(null);
 
         try {
-            // Vérifier à nouveau le token
             const token = localStorage.getItem('token');
             if (!token) {
                 throw new Error('Session expirée. Veuillez vous reconnecter.');
             }
 
-            // Préparer les données pour l'API
             const compteData = {
-                ...compte,
-                numeroCompteBancaire: compte.numeroCompteBancaire?.trim() || null,
+                intitule: compte.intitule.trim(),
+                typeCompte: compte.typeCompte,
+                numeroCompte: compte.numeroCompte.trim(),
+                bic: compte.bic?.trim() || null,
+                banqueId: compte.banqueId || null,
+                planComptableId: compte.planComptableId,
+                journalTresorerieId: compte.journalTresorerieId,
+                gestionnaireId: compte.gestionnaireId,
+                superieurHierarchiqueId: compte.superieurHierarchiqueId || null,
+                soldeOuverture: compte.soldeOuverture,
+                soldeActuel: compte.soldeActuel,
+                estPrincipal: compte.estPrincipal,
+                statut: compte.statut,
                 description: compte.description?.trim() || null,
-                soldeOuverture: parseFloat(compte.soldeOuverture.toString()),
-                soldeActuel: parseFloat(compte.soldeActuel.toString())
+                contactGestionnaire: compte.contactGestionnaire?.trim() || null,
+                fonctionGestionnaire: compte.fonctionGestionnaire?.trim() || null
             };
 
             console.log('Envoi des données à l\'API:', compteData);
@@ -436,16 +559,18 @@ const ComptesTresorerie = () => {
                     throw new Error('Session expirée. Veuillez vous reconnecter.');
                 }
 
-                if (response.status === 400 && responseData.errors) {
-                    Object.entries(responseData.errors).forEach(([field, message]) => {
-                        toast({
-                            title: "Erreur de validation",
-                            description: `${field}: ${message}`,
-                            variant: "destructive"
+                if (response.status === 400) {
+                    if (responseData.errors) {
+                        Object.entries(responseData.errors).forEach(([field, message]) => {
+                            toast({
+                                title: "Erreur de validation",
+                                description: `${field}: ${message}`,
+                                variant: "destructive"
+                            });
                         });
-                    });
-                } else if (responseData.error) {
-                    throw new Error(responseData.error);
+                    } else if (responseData.error) {
+                        throw new Error(responseData.error);
+                    }
                 } else {
                     throw new Error(`Erreur ${response.status}: ${response.statusText}`);
                 }
@@ -476,27 +601,46 @@ const ComptesTresorerie = () => {
 
     const resetForm = () => {
         const currentPlanComptables = planComptables.length > 0 ? planComptables : DEMO_PLAN_COMPTABLES;
-        const currentDevises = devises.length > 0 ? devises : DEMO_DEVISES;
+        const currentJournaux = journauxTresorerie.length > 0 ? journauxTresorerie : DEMO_JOURNAUX_TRESORERIE;
+        const currentUtilisateurs = utilisateurs.length > 0 ? utilisateurs : DEMO_UTILISATEURS;
 
         setCompte({
-            nom: '',
-            typeCompte: 'BANQUE',
-            numeroCompteComptable: '',
-            planComptableId: currentPlanComptables[0]?.id || 0,
+            intitule: '',
+            typeCompte: 'courant',
+            numeroCompte: '',
+            bic: '',
             banqueId: undefined,
-            numeroCompteBancaire: '',
-            deviseId: currentDevises[0]?.id || 0,
-            soldeOuverture: 0,
-            soldeActuel: 0,
+            planComptableId: currentPlanComptables[0]?.id || 0,
+            journalTresorerieId: currentJournaux[0]?.id || 0,
+            gestionnaireId: currentUtilisateurs[0]?.id || 0,
+            superieurHierarchiqueId: undefined,
+            soldeOuverture: '0.00',
+            soldeActuel: '0.00',
             estPrincipal: false,
             statut: 'ACTIF',
-            description: ''
+            description: '',
+            contactGestionnaire: '',
+            fonctionGestionnaire: ''
         });
         setError(null);
     };
 
     const handleRefresh = () => {
         fetchData();
+    };
+
+    const typesRequireBanque = ['courant', 'epargne', 'transit', 'provision'];
+
+    const getUtilisateurDisplayName = (user: Utilisateur): string => {
+        if (user.fullName) return user.fullName;
+        if (user.firstName && user.lastName) return `${user.firstName} ${user.lastName}`;
+        if (user.firstName) return user.firstName;
+        return user.username;
+    };
+
+    const getPlanComptableDisplayName = (pc: PlanComptable): string => {
+        const code = pc.codeFormate || pc.codeCompte;
+        return `${code} - ${pc.intitule}`;
     };
 
     if (loading) {
@@ -523,7 +667,7 @@ const ComptesTresorerie = () => {
                         variant="outline"
                         onClick={handleRefresh}
                         className="gap-2"
-                        disabled={submitting}
+                        disabled={submitting || loading}
                     >
                         <RefreshCw className="w-4 h-4" />
                         Actualiser
@@ -565,18 +709,18 @@ const ComptesTresorerie = () => {
                     </CardHeader>
                     <CardContent className="space-y-6">
                         <div className="space-y-4">
-                            <h3 className="text-lg font-semibold">Informations de base</h3>
+                            <h3 className="text-lg font-semibold">Informations générales</h3>
 
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div className="space-y-2">
-                                    <Label htmlFor="nom">
-                                        Nom du compte <span className="text-red-500">*</span>
+                                    <Label htmlFor="intitule">
+                                        Intitulé du compte <span className="text-red-500">*</span>
                                     </Label>
                                     <Input
-                                        id="nom"
-                                        value={compte.nom}
-                                        onChange={(e) => handleChange('nom', e.target.value)}
-                                        placeholder="Ex: Compte principal Banque Populaire"
+                                        id="intitule"
+                                        value={compte.intitule}
+                                        onChange={(e) => handleChange('intitule', e.target.value)}
+                                        placeholder="Ex: Compte courant principal Banque Populaire"
                                         required
                                         disabled={submitting}
                                     />
@@ -600,11 +744,11 @@ const ComptesTresorerie = () => {
                                             <SelectValue placeholder="Sélectionner le type" />
                                         </SelectTrigger>
                                         <SelectContent>
-                                            <SelectItem value="BANQUE">Banque</SelectItem>
-                                            <SelectItem value="CAISSE">Caisse</SelectItem>
-                                            <SelectItem value="COMPTE_COURANT">Compte courant</SelectItem>
-                                            <SelectItem value="MOBILE_MONEY">Mobile Money</SelectItem>
-                                            <SelectItem value="AUTRE">Autre</SelectItem>
+                                            {Object.entries(TYPES_COMPTE).map(([key, label]) => (
+                                                <SelectItem key={key} value={key}>
+                                                    {label}
+                                                </SelectItem>
+                                            ))}
                                         </SelectContent>
                                     </Select>
                                     <p className="text-sm text-muted-foreground">
@@ -615,25 +759,45 @@ const ComptesTresorerie = () => {
 
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div className="space-y-2">
-                                    <Label htmlFor="numeroCompteComptable">
-                                        Numéro de compte comptable <span className="text-red-500">*</span>
+                                    <Label htmlFor="numeroCompte">
+                                        Numéro de compte <span className="text-red-500">*</span>
                                     </Label>
                                     <Input
-                                        id="numeroCompteComptable"
-                                        value={compte.numeroCompteComptable}
-                                        onChange={(e) => handleChange('numeroCompteComptable', e.target.value)}
-                                        placeholder="Ex: 512100"
+                                        id="numeroCompte"
+                                        value={compte.numeroCompte}
+                                        onChange={(e) => handleChange('numeroCompte', e.target.value)}
+                                        placeholder="Ex: IBAN ou numéro de compte bancaire"
                                         required
                                         disabled={submitting}
                                     />
                                     <p className="text-sm text-muted-foreground">
-                                        Numéro unique du compte comptable
+                                        Numéro de compte (IBAN, RIB ou identifiant local)
                                     </p>
                                 </div>
 
                                 <div className="space-y-2">
+                                    <Label htmlFor="bic">BIC/SWIFT (Optionnel)</Label>
+                                    <Input
+                                        id="bic"
+                                        value={compte.bic || ''}
+                                        onChange={(e) => handleChange('bic', e.target.value)}
+                                        placeholder="Ex: BCPAMAMC"
+                                        disabled={submitting || compte.typeCompte === 'autre'}
+                                    />
+                                    <p className="text-sm text-muted-foreground">
+                                        Code BIC/SWIFT de la banque
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="space-y-4 border-t pt-4">
+                            <h3 className="text-lg font-semibold">Relations et affectations</h3>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="space-y-2">
                                     <Label htmlFor="planComptable">
-                                        Compte comptable associé <span className="text-red-500">*</span>
+                                        Compte comptable <span className="text-red-500">*</span>
                                     </Label>
                                     <Select
                                         value={compte.planComptableId.toString()}
@@ -641,12 +805,12 @@ const ComptesTresorerie = () => {
                                         disabled={submitting || (planComptables.length === 0 && !useDemoData)}
                                     >
                                         <SelectTrigger>
-                                            <SelectValue placeholder="Sélectionner un compte" />
+                                            <SelectValue placeholder="Sélectionner un compte comptable" />
                                         </SelectTrigger>
                                         <SelectContent>
                                             {(planComptables.length > 0 ? planComptables : DEMO_PLAN_COMPTABLES).map((pc) => (
                                                 <SelectItem key={pc.id} value={pc.id.toString()}>
-                                                    {pc.codeFormate || pc.codeCompte} - {pc.intitule}
+                                                    {getPlanComptableDisplayName(pc)}
                                                 </SelectItem>
                                             ))}
                                         </SelectContent>
@@ -657,10 +821,93 @@ const ComptesTresorerie = () => {
                                         </p>
                                     )}
                                 </div>
+
+                                <div className="space-y-2">
+                                    <Label htmlFor="journalTresorerie">
+                                        Journal de trésorerie <span className="text-red-500">*</span>
+                                    </Label>
+                                    <Select
+                                        value={compte.journalTresorerieId.toString()}
+                                        onValueChange={(value) => handleChange('journalTresorerieId', parseInt(value))}
+                                        disabled={submitting || (journauxTresorerie.length === 0 && !useDemoData)}
+                                    >
+                                        <SelectTrigger>
+                                            <SelectValue placeholder="Sélectionner un journal" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {(journauxTresorerie.length > 0 ? journauxTresorerie : DEMO_JOURNAUX_TRESORERIE).map((journal) => (
+                                                <SelectItem key={journal.id} value={journal.id.toString()}>
+                                                    {journal.code} - {journal.intitule}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                    {journauxTresorerie.length === 0 && !useDemoData && (
+                                        <p className="text-sm text-destructive">
+                                            Aucun journal de trésorerie disponible
+                                        </p>
+                                    )}
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                    <Label htmlFor="gestionnaire">
+                                        Gestionnaire <span className="text-red-500">*</span>
+                                    </Label>
+                                    <Select
+                                        value={compte.gestionnaireId.toString()}
+                                        onValueChange={(value) => handleChange('gestionnaireId', parseInt(value))}
+                                        disabled={submitting || (utilisateurs.length === 0 && !useDemoData)}
+                                    >
+                                        <SelectTrigger>
+                                            <SelectValue placeholder="Sélectionner un gestionnaire" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {(utilisateurs.length > 0 ? utilisateurs : DEMO_UTILISATEURS).map((user) => (
+                                                <SelectItem key={user.id} value={user.id.toString()}>
+                                                    {getUtilisateurDisplayName(user)}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                    {utilisateurs.length === 0 && !useDemoData && (
+                                        <p className="text-sm text-destructive">
+                                            Aucun utilisateur disponible
+                                        </p>
+                                    )}
+                                </div>
+
+                                <div className="space-y-2">
+                                    <Label htmlFor="superieurHierarchique">Supérieur hiérarchique (Optionnel)</Label>
+                                    <Select
+                                        value={compte.superieurHierarchiqueId?.toString() || 'none'}
+                                        onValueChange={(value) => {
+                                            if (value === 'none') {
+                                                handleChange('superieurHierarchiqueId', undefined);
+                                            } else {
+                                                handleChange('superieurHierarchiqueId', parseInt(value));
+                                            }
+                                        }}
+                                        disabled={submitting || (utilisateurs.length === 0 && !useDemoData)}
+                                    >
+                                        <SelectTrigger>
+                                            <SelectValue placeholder="Sélectionner un supérieur hiérarchique" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="none">Aucun</SelectItem>
+                                            {(utilisateurs.length > 0 ? utilisateurs : DEMO_UTILISATEURS).map((user) => (
+                                                <SelectItem key={user.id} value={user.id.toString()}>
+                                                    {getUtilisateurDisplayName(user)}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
                             </div>
                         </div>
 
-                        {compte.typeCompte === 'BANQUE' && (
+                        {typesRequireBanque.includes(compte.typeCompte) && (
                             <div className="space-y-4 border-t pt-4">
                                 <h3 className="text-lg font-semibold">Informations bancaires</h3>
 
@@ -670,17 +917,24 @@ const ComptesTresorerie = () => {
                                             Banque <span className="text-red-500">*</span>
                                         </Label>
                                         <Select
-                                            value={compte.banqueId?.toString() || ''}
-                                            onValueChange={(value) => handleChange('banqueId', parseInt(value))}
+                                            value={compte.banqueId?.toString() || 'none'}
+                                            onValueChange={(value) => {
+                                                if (value === 'none') {
+                                                    handleChange('banqueId', undefined);
+                                                } else {
+                                                    handleChange('banqueId', parseInt(value));
+                                                }
+                                            }}
                                             disabled={submitting || (banques.length === 0 && !useDemoData)}
                                         >
                                             <SelectTrigger>
                                                 <SelectValue placeholder="Sélectionner une banque" />
                                             </SelectTrigger>
                                             <SelectContent>
+                                                <SelectItem value="none">Sélectionner une banque</SelectItem>
                                                 {(banques.length > 0 ? banques : DEMO_BANQUES).map((banque) => (
                                                     <SelectItem key={banque.id} value={banque.id.toString()}>
-                                                        {banque.nom} ({banque.code})
+                                                        {banque.nom} ({banque.codeBanque})
                                                     </SelectItem>
                                                 ))}
                                             </SelectContent>
@@ -693,19 +947,16 @@ const ComptesTresorerie = () => {
                                     </div>
 
                                     <div className="space-y-2">
-                                        <Label htmlFor="numeroCompteBancaire">
-                                            Numéro de compte bancaire <span className="text-red-500">*</span>
-                                        </Label>
+                                        <Label htmlFor="contactGestionnaire">Contact du gestionnaire (Optionnel)</Label>
                                         <Input
-                                            id="numeroCompteBancaire"
-                                            value={compte.numeroCompteBancaire || ''}
-                                            onChange={(e) => handleChange('numeroCompteBancaire', e.target.value)}
-                                            placeholder="Ex: 123456789012"
-                                            required={compte.typeCompte === 'BANQUE'}
+                                            id="contactGestionnaire"
+                                            value={compte.contactGestionnaire || ''}
+                                            onChange={(e) => handleChange('contactGestionnaire', e.target.value)}
+                                            placeholder="Ex: Tél: 06-XX-XX-XX-XX"
                                             disabled={submitting}
                                         />
                                         <p className="text-sm text-muted-foreground">
-                                            Numéro du compte bancaire
+                                            Contact du gestionnaire de compte
                                         </p>
                                     </div>
                                 </div>
@@ -713,47 +964,19 @@ const ComptesTresorerie = () => {
                         )}
 
                         <div className="space-y-4 border-t pt-4">
-                            <h3 className="text-lg font-semibold">Devise et soldes</h3>
+                            <h3 className="text-lg font-semibold">Soldes</h3>
 
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                <div className="space-y-2">
-                                    <Label htmlFor="devise">
-                                        Devise <span className="text-red-500">*</span>
-                                    </Label>
-                                    <Select
-                                        value={compte.deviseId.toString()}
-                                        onValueChange={(value) => handleChange('deviseId', parseInt(value))}
-                                        disabled={submitting || (devises.length === 0 && !useDemoData)}
-                                    >
-                                        <SelectTrigger>
-                                            <SelectValue placeholder="Sélectionner une devise" />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            {(devises.length > 0 ? devises : DEMO_DEVISES).map((devise) => (
-                                                <SelectItem key={devise.id} value={devise.id.toString()}>
-                                                    {devise.code} - {devise.intitule} ({devise.symbole})
-                                                </SelectItem>
-                                            ))}
-                                        </SelectContent>
-                                    </Select>
-                                    {devises.length === 0 && !useDemoData && (
-                                        <p className="text-sm text-destructive">
-                                            Aucune devise active disponible
-                                        </p>
-                                    )}
-                                </div>
-
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div className="space-y-2">
                                     <Label htmlFor="soldeOuverture">
-                                        Solde d'ouverture (DH) <span className="text-red-500">*</span>
+                                        Solde d'ouverture <span className="text-red-500">*</span>
                                     </Label>
                                     <Input
                                         id="soldeOuverture"
                                         type="number"
                                         step="0.01"
-                                        min="0"
                                         value={compte.soldeOuverture}
-                                        onChange={(e) => handleChange('soldeOuverture', e.target.value)}
+                                        onChange={(e) => handleChange('soldeOuverture', e.target.value || '0.00')}
                                         placeholder="0.00"
                                         required
                                         disabled={submitting}
@@ -764,7 +987,7 @@ const ComptesTresorerie = () => {
                                 </div>
 
                                 <div className="space-y-2">
-                                    <Label htmlFor="soldeActuel">Solde actuel (DH)</Label>
+                                    <Label htmlFor="soldeActuel">Solde actuel</Label>
                                     <Input
                                         id="soldeActuel"
                                         type="number"
@@ -782,7 +1005,7 @@ const ComptesTresorerie = () => {
                         </div>
 
                         <div className="space-y-4 border-t pt-4">
-                            <h3 className="text-lg font-semibold">Paramètres</h3>
+                            <h3 className="text-lg font-semibold">Paramètres et informations supplémentaires</h3>
 
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <div className="flex items-center justify-between">
@@ -804,7 +1027,7 @@ const ComptesTresorerie = () => {
                                     <div>
                                         <Label htmlFor="statut">Statut</Label>
                                         <p className="text-sm text-muted-foreground">
-                                            Activer ou désactiver le compte
+                                            Statut du compte
                                         </p>
                                     </div>
                                     <Select
@@ -820,18 +1043,35 @@ const ComptesTresorerie = () => {
                                         <SelectContent>
                                             <SelectItem value="ACTIF">Actif</SelectItem>
                                             <SelectItem value="INACTIF">Inactif</SelectItem>
+                                            <SelectItem value="CLOTURE">Clôturé</SelectItem>
                                         </SelectContent>
                                     </Select>
                                 </div>
                             </div>
 
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                    <Label htmlFor="fonctionGestionnaire">Fonction du gestionnaire (Optionnel)</Label>
+                                    <Input
+                                        id="fonctionGestionnaire"
+                                        value={compte.fonctionGestionnaire || ''}
+                                        onChange={(e) => handleChange('fonctionGestionnaire', e.target.value)}
+                                        placeholder="Ex: Responsable trésorerie"
+                                        disabled={submitting}
+                                    />
+                                    <p className="text-sm text-muted-foreground">
+                                        Fonction du gestionnaire de compte
+                                    </p>
+                                </div>
+                            </div>
+
                             <div className="space-y-2">
-                                <Label htmlFor="description">Description</Label>
+                                <Label htmlFor="description">Description (Optionnel)</Label>
                                 <Textarea
                                     id="description"
                                     value={compte.description || ''}
                                     onChange={(e) => handleChange('description', e.target.value)}
-                                    placeholder="Description du compte (facultatif)"
+                                    placeholder="Description du compte, informations complémentaires..."
                                     rows={3}
                                     disabled={submitting}
                                 />

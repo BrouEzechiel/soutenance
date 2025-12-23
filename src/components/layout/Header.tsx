@@ -97,7 +97,6 @@ const Header = () => {
                         <DropdownMenuLabel>Mon compte</DropdownMenuLabel>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem>Profil</DropdownMenuItem>
-                        <DropdownMenuItem>Paramètres</DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
                             className="text-destructive"

@@ -16,7 +16,8 @@ import { useState, useEffect } from "react";
 
 const navigation = [
     { name: "Tableau de bord", href: "/", icon: LayoutDashboard },
-    { name: "Comptes bancaires", href: "/comptes", icon: CreditCard },
+    { name: "Comptes bancaires", href: "/comptes", icon: CreditCard
+    },
     {
         name: "Encaissements",
         icon: TrendingUp,
@@ -36,8 +37,8 @@ const navigation = [
         ]
     },
     { name: "Rapprochement", href: "/rapprochement", icon: FileText },
-    { name: "Tiers", href: "/tiers", icon: Building2 },
     { name: "Utilisateurs", href: "/utilisateurs", icon: Users },
+    { name: "Factures", href: "/factures", icon: FileText },
     {
         name: "Paramètres",
         icon: Settings,
@@ -46,9 +47,8 @@ const navigation = [
             { name: "Exercice comptable", href: "/parametres/exercice-comptable" },
             { name: "Devise", href: "/parametres/gestion-devises" },
             { name: "Comptes trésorerie", href: "/parametres/comptes-tresorerie" },
-            { name: "Comptes banques", href: "/parametres/comptes-banques" },
+            { name: "Parametre compte tresorerie", href: "/parametres/parametre-compte-tresorerie" },
             { name: "Banques", href: "/parametres/CreationBanque" },
-            { name: "Comptes bancaires", href: "/parametres/comptes-bancaires" },
             { name: "Tiers", href: "/parametres/tiers" },
             { name: "Charges sociales", href: "/parametres/charges" },
             { name: "Rôles", href: "/parametres/gestion-roles" },

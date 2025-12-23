@@ -15,9 +15,32 @@ import ExerciceComptable from "./pages/parametres/ExerciceComptable";
 import GestionDevises from "./pages/parametres/GestionDevises";
 import GestionPlanComptable from "./pages/parametres/GestionPlanComptable";
 import ComptesTresorerie from "./pages/parametres/ComptesTresorerie";
-import JournalTresorerie from "./pages/parametres/JournalTresorerie"; // 👈 Import de la nouvelle page
+import JournalTresorerie from "./pages/parametres/JournalTresorerie";
+import TiersPage from "./pages/parametres/TiersPage";
+import ParametresBancaires from "@/pages/parametres/ParametresBancaires";
+import ChargesSocialesPage from "@/pages/parametres/ChargeSocialePage";
+import FeuilleEncaissementPage from "@/pages/encaissements/FeuilleEncaissementPage";
+import OrdrePaiement from "@/pages/decaissements/OrdrePaiement";
+import FacturePage from "@/pages/FacturePage";
 
 const queryClient = new QueryClient();
+
+// Fonction pour désactiver les warnings de React Router Future Flags
+const disableRouterWarnings = () => {
+    const originalWarn = console.warn;
+    console.warn = (...args: any[]) => {
+        if (
+            typeof args[0] === 'string' &&
+            args[0].includes('React Router Future Flag Warning')
+        ) {
+            return;
+        }
+        originalWarn.apply(console, args);
+    };
+};
+
+// Appeler la fonction pour désactiver les warnings
+disableRouterWarnings();
 
 const App = () => (
     <QueryClientProvider client={queryClient}>
@@ -62,7 +85,7 @@ const App = () => (
 
                     {/* 🆕 Création Banque - accès admin + super admin */}
                     <Route
-                        path="/parametres/CreationBanque"
+                        path="/parametres/creation-banque"
                         element={
                             <ProtectedRoute allowedRoles={["ROLE_ADMINISTRATEUR", "ROLE_SUPER_ADMIN"]}>
                                 <CreationBanque />
@@ -116,6 +139,66 @@ const App = () => (
                         element={
                             <ProtectedRoute allowedRoles={["ROLE_ADMINISTRATEUR", "ROLE_SUPER_ADMIN", "ROLE_COMPTABLE"]}>
                                 <JournalTresorerie />
+                            </ProtectedRoute>
+                        }
+                    />
+
+                    {/* 🆕 Gestion des Tiers - accès admin + super admin + comptable */}
+                    <Route
+                        path="/parametres/tiers"
+                        element={
+                            <ProtectedRoute allowedRoles={["ROLE_ADMINISTRATEUR", "ROLE_SUPER_ADMIN", "ROLE_COMPTABLE"]}>
+                                <TiersPage />
+                            </ProtectedRoute>
+                        }
+                    />
+
+                    {/* 🆕 Paramètres Bancaires - accès admin + super admin + comptable */}
+                    <Route
+                        path="/parametres/parametre-compte-tresorerie"
+                        element={
+                            <ProtectedRoute allowedRoles={["ROLE_ADMINISTRATEUR", "ROLE_SUPER_ADMIN", "ROLE_COMPTABLE"]}>
+                                <ParametresBancaires />
+                            </ProtectedRoute>
+                        }
+                    />
+
+                    {/* 🆕 Gestion des Charges Sociales - accès admin + super admin + comptable */}
+                    <Route
+                        path="/parametres/charges"
+                        element={
+                            <ProtectedRoute allowedRoles={["ROLE_ADMINISTRATEUR", "ROLE_SUPER_ADMIN", "ROLE_COMPTABLE"]}>
+                                <ChargesSocialesPage />
+                            </ProtectedRoute>
+                        }
+                    />
+
+                    {/* 🆕 Gestion des Factures - accès admin + super admin + comptable + agent */}
+                    <Route
+                        path="/factures"
+                        element={
+                            <ProtectedRoute allowedRoles={["ROLE_ADMINISTRATEUR", "ROLE_SUPER_ADMIN", "ROLE_COMPTABLE", "ROLE_AGENT"]}>
+                                <FacturePage />
+                            </ProtectedRoute>
+                        }
+                    />
+
+                    {/* 🆕 Feuille d'encaissement - accès admin + super admin + comptable + caissier */}
+                    <Route
+                        path="/encaissements/feuille"
+                        element={
+                            <ProtectedRoute allowedRoles={["ROLE_ADMINISTRATEUR", "ROLE_SUPER_ADMIN", "ROLE_COMPTABLE", "ROLE_CAISSIER"]}>
+                                <FeuilleEncaissementPage />
+                            </ProtectedRoute>
+                        }
+                    />
+
+                    {/* 🆕 Ordre de paiement - accès admin + super admin + comptable + agent */}
+                    <Route
+                        path="/decaissements/ordre-paiement"
+                        element={
+                            <ProtectedRoute allowedRoles={["ROLE_ADMINISTRATEUR", "ROLE_SUPER_ADMIN", "ROLE_COMPTABLE", "ROLE_AGENT"]}>
+                                <OrdrePaiement />
                             </ProtectedRoute>
                         }
                     />
