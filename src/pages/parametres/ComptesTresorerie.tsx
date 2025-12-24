@@ -714,7 +714,7 @@ const ComptesTresorerie = () => {
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div className="space-y-2">
                                     <Label htmlFor="intitule">
-                                        Intitulé du compte <span className="text-red-500">*</span>
+                                        Nom descriptif <span className="text-red-500">*</span>
                                     </Label>
                                     <Input
                                         id="intitule"
@@ -760,7 +760,7 @@ const ComptesTresorerie = () => {
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div className="space-y-2">
                                     <Label htmlFor="numeroCompte">
-                                        Numéro de compte <span className="text-red-500">*</span>
+                                        IBAN <span className="text-red-500">*</span>
                                     </Label>
                                     <Input
                                         id="numeroCompte"
@@ -797,7 +797,7 @@ const ComptesTresorerie = () => {
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div className="space-y-2">
                                     <Label htmlFor="planComptable">
-                                        Compte comptable <span className="text-red-500">*</span>
+                                         Numéro du compte <span className="text-red-500">*</span>
                                     </Label>
                                     <Select
                                         value={compte.planComptableId.toString()}

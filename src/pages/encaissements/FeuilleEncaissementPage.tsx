@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Printer, Plus, Trash2, Save, Send, CheckCircle, XCircle, Download, Eye, Search, Filter, Loader2, AlertCircle, Building, FileText, Calendar } from "lucide-react";
+import { Printer, Plus, Trash2, Save, Send, CheckCircle, XCircle, Download, Eye, Search, Filter, Loader2, AlertCircle, Building, FileText, Calendar, RefreshCw } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from "@/components/ui/dialog";
@@ -30,7 +30,8 @@ const API_ENDPOINTS = {
     FEUILLES_ENCAISSEMENT: `${API_BASE_URL}/feuilles-encaissement`,
     ORDRE_PAIEMENT: `${API_BASE_URL}/ordre-paiement`,
     SOCIETES_ACTIVES: `${API_BASE_URL}/societes/actives`,
-    SOCIETES: `${API_BASE_URL}/societes`
+    SOCIETES: `${API_BASE_URL}/societes`,
+    JOURNAUX_TRESORERIE: `${API_BASE_URL}/journaux-tresorerie`
 };
 
 // Types basés sur vos entités et contrôleurs
@@ -177,6 +178,9 @@ interface FeuilleEncaissement {
     updatedAt?: string;
     createdBy?: any;
     updatedBy?: any;
+    operationTresorerie?: any;
+    validatedAt?: string;
+    validatedBy?: any;
 }
 
 // Interface pour la création de facture
@@ -215,15 +219,37 @@ const getAuthHeaders = (contentType: string | null = 'application/json'): Header
     return headers;
 };
 
+// Fonction utilitaire pour formater la date pour l'input HTML date
+const formatDateForInput = (dateString: string | undefined | null): string => {
+    if (!dateString) return '';
+    // Si la date est déjà au format yyyy-MM-dd, la retourner
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) return dateString;
+    // Sinon, extraire la partie date d'un format ISO (YYYY-MM-DDTHH:MM:SS)
+    const match = dateString.match(/^(\d{4}-\d{2}-\d{2})/);
+    return match ? match[1] : '';
+};
+
+// Fonction pour formater la date au format ISO 8601 que Symfony attend
+const formatDateForSymfony = (dateString: string): string => {
+    if (!dateString) return '';
+    // Si la date est déjà au format complet, la retourner telle quelle
+    if (dateString.includes('T')) {
+        return dateString;
+    }
+    // Sinon, ajouter le temps (minuit)
+    return `${dateString}T00:00:00`;
+};
+
 const FeuilleEncaissementPage = () => {
     const { toast } = useToast();
     const [loading, setLoading] = useState(false);
+    const [refreshing, setRefreshing] = useState(false);
 
     // États pour les données
     const [societe, setSociete] = useState<Societe | null>(null);
     const [feuille, setFeuille] = useState<FeuilleEncaissement>({
         numeroFeuille: '',
-        dateEncaissement: new Date().toISOString().split('T')[0],
+        dateEncaissement: formatDateForInput(new Date().toISOString()), // Utilisation du formateur
         typeClient: 'client',
         codeClient: '',
         nomClient: '',
@@ -283,8 +309,8 @@ const FeuilleEncaissementPage = () => {
     const [showCreateFactureModal, setShowCreateFactureModal] = useState(false);
     const [newFacture, setNewFacture] = useState<NewFacture>({
         numero: '',
-        dateEmission: new Date().toISOString().split('T')[0],
-        dateEcheance: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+        dateEmission: formatDateForInput(new Date().toISOString()), // Utilisation du formateur
+        dateEcheance: formatDateForInput(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()), // Utilisation du formateur
         montantTotal: 0,
         solde: 0,
         statut: 'emise',
@@ -345,6 +371,13 @@ const FeuilleEncaissementPage = () => {
         fetchInitialData();
     }, []);
 
+    // Rafraîchir la feuille lorsqu'on a un ID
+    useEffect(() => {
+        if (feuille.id) {
+            refreshFeuille();
+        }
+    }, [feuille.id]);
+
     const fetchInitialData = async () => {
         try {
             const token = localStorage.getItem('token');
@@ -370,6 +403,34 @@ const FeuilleEncaissementPage = () => {
         } catch (error) {
             console.error('Erreur lors du chargement des données initiales:', error);
             setError('Erreur lors du chargement des données initiales');
+        }
+    };
+
+    // Fonction pour rafraîchir les données de la feuille
+    const refreshFeuille = async () => {
+        if (!feuille.id) return;
+
+        setRefreshing(true);
+        try {
+            const response = await fetch(`${API_ENDPOINTS.FEUILLES_ENCAISSEMENT}/${feuille.id}`, {
+                headers: getAuthHeaders()
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                if (result.success && result.data) {
+                    setFeuille(prev => ({
+                        ...prev,
+                        ...result.data,
+                        statut: result.data.statut,
+                        dateEncaissement: formatDateForInput(result.data.dateEncaissement)
+                    }));
+                }
+            }
+        } catch (error) {
+            console.error('Erreur lors du rafraîchissement:', error);
+        } finally {
+            setRefreshing(false);
         }
     };
 
@@ -744,15 +805,11 @@ const FeuilleEncaissementPage = () => {
         return date.toLocaleDateString('fr-FR');
     };
 
-    // Fonction pour formater la date au format ISO 8601 que Symfony attend
-    const formatDateForSymfony = (dateString: string): string => {
-        if (!dateString) return '';
-        // Si la date est déjà au format complet, la retourner telle quelle
-        if (dateString.includes('T')) {
-            return dateString;
-        }
-        // Sinon, ajouter le temps (minuit)
-        return `${dateString}T00:00:00`;
+    // Formater une date et heure
+    const formatDateTime = (dateString: string) => {
+        if (!dateString) return '-';
+        const date = new Date(dateString);
+        return date.toLocaleString('fr-FR');
     };
 
     // Sauvegarder la feuille - VERSION CORRIGÉE
@@ -800,20 +857,20 @@ const FeuilleEncaissementPage = () => {
 
             // CORRECTION : Ajouter les champs seulement s'ils ont une valeur
             if (feuille.compteClient?.id) {
-                dataToSend.compteClient = feuille.compteClient.id;
+                dataToSend.compteClient = { id: feuille.compteClient.id };
             }
 
             if (feuille.compteTresorerie?.id) {
-                dataToSend.compteTresorerie = feuille.compteTresorerie.id;
+                dataToSend.compteTresorerie = { id: feuille.compteTresorerie.id };
             }
 
             if (deviseSociete?.id) {
-                dataToSend.devise = deviseSociete.id;
+                dataToSend.devise = { id: deviseSociete.id };
             }
 
             // CORRECTION : Envoyer tiers seulement si sélectionné
             if (feuille.tiers?.id) {
-                dataToSend.tiers = feuille.tiers.id;
+                dataToSend.tiers = { id: feuille.tiers.id };
             }
 
             // CORRECTION : Ajouter les références seulement si elles ont une valeur
@@ -907,12 +964,15 @@ const FeuilleEncaissementPage = () => {
             console.log('Réponse serveur:', result);
 
             if (result.success) {
-                setFeuille(prev => ({
-                    ...prev,
+                // Mettre à jour la feuille avec la réponse du serveur
+                const updatedFeuille = {
                     ...result.data || result,
                     id: result.data?.id || result.id,
-                    numeroFeuille: result.data?.numeroFeuille || result.numeroFeuille || prev.numeroFeuille
-                }));
+                    numeroFeuille: result.data?.numeroFeuille || result.numeroFeuille || feuille.numeroFeuille,
+                    dateEncaissement: formatDateForInput(result.data?.dateEncaissement || result.dateEncaissement || feuille.dateEncaissement),
+                };
+
+                setFeuille(updatedFeuille);
 
                 toast({
                     title: "Succès",
@@ -950,7 +1010,7 @@ const FeuilleEncaissementPage = () => {
         try {
             const response = await fetch(`${API_ENDPOINTS.FEUILLES_ENCAISSEMENT}/${feuille.id}/soumettre`, {
                 method: 'POST',
-                headers: getAuthHeaders(null),
+                headers: getAuthHeaders('application/json'),
             });
 
             if (!response.ok) {
@@ -964,7 +1024,8 @@ const FeuilleEncaissementPage = () => {
             setFeuille(prev => ({
                 ...prev,
                 ...result.data || result,
-                statut: result.data?.statut || result.statut || prev.statut
+                statut: result.data?.statut || result.statut || prev.statut,
+                dateEncaissement: formatDateForInput(result.data?.dateEncaissement || result.dateEncaissement || prev.dateEncaissement)
             }));
             toast({
                 title: "Succès",
@@ -982,34 +1043,123 @@ const FeuilleEncaissementPage = () => {
         }
     };
 
-    // Valider la feuille
+    // Valider la feuille - VERSION AMÉLIORÉE
     const handleValider = async () => {
         if (!feuille.id) return;
+
+        // VÉRIFIER LE STATUT AVANT D'ESSAYER DE VALIDER
+        if (feuille.statut === 'valide') {
+            toast({
+                title: "Déjà validée",
+                description: "Cette feuille est déjà validée",
+                variant: "default",
+            });
+            return;
+        }
+
+        if (feuille.statut === 'pointe') {
+            toast({
+                title: "Déjà pointée",
+                description: "Cette feuille est déjà pointée et ne peut plus être modifiée",
+                variant: "destructive",
+            });
+            return;
+        }
+
+        if (feuille.statut === 'rejete') {
+            toast({
+                title: "Rejetée",
+                description: "Cette feuille a été rejetée et ne peut plus être validée",
+                variant: "destructive",
+            });
+            return;
+        }
+
+        if (feuille.statut === 'annule') {
+            toast({
+                title: "Annulée",
+                description: "Cette feuille a été annulée",
+                variant: "destructive",
+            });
+            return;
+        }
 
         try {
             const response = await fetch(`${API_ENDPOINTS.FEUILLES_ENCAISSEMENT}/${feuille.id}/valider`, {
                 method: 'POST',
-                headers: getAuthHeaders(null),
+                headers: getAuthHeaders('application/json'),
             });
 
-            if (!response.ok) {
-                if (response.status === 401) {
-                    throw new Error('Session expirée. Veuillez vous reconnecter.');
-                }
-                throw new Error(`Erreur ${response.status}: ${response.statusText}`);
+            const responseText = await response.text();
+            console.log('Réponse brute validation:', responseText);
+
+            let result;
+            try {
+                result = JSON.parse(responseText);
+            } catch (e) {
+                console.error('Erreur parsing JSON:', e);
+                throw new Error(`Réponse invalide du serveur: ${responseText}`);
             }
 
-            const result = await response.json();
-            setFeuille(prev => ({
-                ...prev,
-                ...result.data || result,
-                statut: result.data?.statut || result.statut || prev.statut
-            }));
-            toast({
-                title: "Succès",
-                description: "Feuille validée",
-                variant: "default",
-            });
+            if (!response.ok) {
+                const errorMessage = result.message || result.error || `Erreur ${response.status}`;
+
+                // Si la feuille est déjà validée, message différent
+                if (errorMessage.includes('déjà validée') || errorMessage.includes('already validated')) {
+                    toast({
+                        title: "Déjà validée",
+                        description: "Cette feuille est déjà validée",
+                        variant: "default",
+                    });
+                    // Mettre à jour le statut localement
+                    setFeuille(prev => ({
+                        ...prev,
+                        statut: 'valide'
+                    }));
+                }
+                // Si erreur de journal
+                else if (errorMessage.includes('journal') || errorMessage.includes('Journal')) {
+                    toast({
+                        title: "Configuration requise",
+                        description: (
+                            <div>
+                                <p>{errorMessage}</p>
+                                <p className="mt-2 text-sm">
+                                    Compte de trésorerie : {result.debug?.compte_tresorerie_nom || 'Non spécifié'}
+                                </p>
+                            </div>
+                        ),
+                        variant: "destructive",
+                        duration: 10000,
+                    });
+                }
+                else {
+                    toast({
+                        title: "Erreur de validation",
+                        description: errorMessage,
+                        variant: "destructive",
+                    });
+                }
+
+                return;
+            }
+
+            // Succès
+            if (result.success) {
+                setFeuille(prev => ({
+                    ...prev,
+                    ...result.data || result,
+                    statut: result.data?.statut || 'valide'
+                }));
+
+                toast({
+                    title: "Succès",
+                    description: result.message || "Feuille validée avec succès",
+                    variant: "default",
+                });
+            } else {
+                throw new Error(result.message || "Erreur lors de la validation");
+            }
         } catch (error) {
             console.error('Erreur lors de la validation:', error);
             const errorMessage = error instanceof Error ? error.message : "Impossible de valider";
@@ -1037,23 +1187,31 @@ const FeuilleEncaissementPage = () => {
         try {
             const response = await fetch(`${API_ENDPOINTS.FEUILLES_ENCAISSEMENT}/${feuille.id}/rejeter`, {
                 method: 'POST',
-                headers: getAuthHeaders(),
+                headers: getAuthHeaders('application/json'),
                 body: JSON.stringify({ motif: motifRejet })
             });
 
-            if (!response.ok) {
-                if (response.status === 401) {
-                    throw new Error('Session expirée. Veuillez vous reconnecter.');
-                }
-                throw new Error(`Erreur ${response.status}: ${response.statusText}`);
+            const responseText = await response.text();
+            console.log('Réponse brute rejet:', responseText);
+
+            let result;
+            try {
+                result = JSON.parse(responseText);
+            } catch (e) {
+                throw new Error(`Réponse invalide du serveur: ${responseText}`);
             }
 
-            const result = await response.json();
+            if (!response.ok) {
+                const errorMessage = result.message || result.error || `Erreur ${response.status}: ${response.statusText}`;
+                throw new Error(errorMessage);
+            }
+
             setFeuille(prev => ({
                 ...prev,
                 ...result.data || result,
-                statut: result.data?.statut || result.statut || prev.statut,
-                motifRejet: result.data?.motifRejet || result.motifRejet || motifRejet
+                statut: result.data?.statut || 'rejete',
+                motifRejet: result.data?.motifRejet || result.motifRejet || motifRejet,
+                dateEncaissement: formatDateForInput(result.data?.dateEncaissement || result.dateEncaissement || prev.dateEncaissement)
             }));
             setShowRejetModal(false);
             setMotifRejet('');
@@ -1088,8 +1246,8 @@ const FeuilleEncaissementPage = () => {
         try {
             const factureData = {
                 numero: newFacture.numero,
-                dateEmission: newFacture.dateEmission,
-                dateEcheance: newFacture.dateEcheance || null,
+                dateEmission: formatDateForSymfony(newFacture.dateEmission), // Formater pour Symfony
+                dateEcheance: newFacture.dateEcheance ? formatDateForSymfony(newFacture.dateEcheance) : null,
                 montantTotal: newFacture.montantTotal.toString(),
                 solde: newFacture.montantTotal.toString(),
                 statut: newFacture.statut,
@@ -1105,7 +1263,7 @@ const FeuilleEncaissementPage = () => {
 
             const response = await fetch(API_ENDPOINTS.FACTURES, {
                 method: 'POST',
-                headers: getAuthHeaders(),
+                headers: getAuthHeaders('application/json'),
                 body: JSON.stringify(factureData),
             });
 
@@ -1144,8 +1302,8 @@ const FeuilleEncaissementPage = () => {
 
                     setNewFacture({
                         numero: '',
-                        dateEmission: new Date().toISOString().split('T')[0],
-                        dateEcheance: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+                        dateEmission: formatDateForInput(new Date().toISOString()), // Utilisation du formateur
+                        dateEcheance: formatDateForInput(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()), // Utilisation du formateur
                         montantTotal: 0,
                         solde: 0,
                         statut: 'emise',
@@ -1227,6 +1385,54 @@ const FeuilleEncaissementPage = () => {
         );
     };
 
+    // Afficher les informations de validation
+    const renderValidationInfo = () => {
+        if (feuille.statut !== 'valide' && feuille.statut !== 'pointe' && feuille.statut !== 'rejete') {
+            return null;
+        }
+
+        return (
+            <div className="mb-4 p-3 bg-gray-50 border border-gray-200 rounded-md">
+                <div className="flex items-start justify-between">
+                    <div>
+                        <div className="text-sm font-medium text-gray-800">
+                            {feuille.statut === 'valide' && 'Validée le'}
+                            {feuille.statut === 'pointe' && 'Pointée le'}
+                            {feuille.statut === 'rejete' && 'Rejetée le'}
+                            {feuille.validatedAt && (
+                                <span className="font-bold ml-2">{formatDateTime(feuille.validatedAt)}</span>
+                            )}
+                        </div>
+                        {feuille.motifRejet && (
+                            <div className="mt-2 text-sm text-red-600">
+                                <span className="font-medium">Motif du rejet :</span> {feuille.motifRejet}
+                            </div>
+                        )}
+                        {feuille.operationTresorerie && (
+                            <div className="mt-2 text-sm text-green-600">
+                                <span className="font-medium">Opération de trésorerie créée</span>
+                            </div>
+                        )}
+                    </div>
+                    <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={refreshFeuille}
+                        disabled={refreshing}
+                        className="gap-2"
+                    >
+                        {refreshing ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                            <RefreshCw className="w-4 h-4" />
+                        )}
+                        Rafraîchir
+                    </Button>
+                </div>
+            </div>
+        );
+    };
+
     // Mettre à jour la feuille lorsque la devise société change
     useEffect(() => {
         if (deviseSociete) {
@@ -1255,6 +1461,9 @@ const FeuilleEncaissementPage = () => {
                     </div>
                     <div className="flex items-center gap-2">
                         <Badge className={STATUTS[feuille.statut].color}>
+                            {refreshing ? (
+                                <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                            ) : null}
                             {STATUTS[feuille.statut].label}
                         </Badge>
                         <Button onClick={handleExportPDF} variant="outline" className="gap-2">
@@ -1309,6 +1518,9 @@ const FeuilleEncaissementPage = () => {
                 {/* Information sur la société et devise */}
                 {renderSocieteInfo()}
 
+                {/* Information sur la validation */}
+                {renderValidationInfo()}
+
                 {/* Avertissement si la devise société n'est pas chargée */}
                 {!deviseSociete && !isLoadingSociete && (
                     <Alert className="bg-amber-50 border-amber-200 text-amber-800">
@@ -1349,9 +1561,10 @@ const FeuilleEncaissementPage = () => {
                                                 <Label>Date d'encaissement *</Label>
                                                 <Input
                                                     type="date"
-                                                    value={feuille.dateEncaissement}
+                                                    value={formatDateForInput(feuille.dateEncaissement)} // Utilisation du formateur
                                                     onChange={(e) => setFeuille({...feuille, dateEncaissement: e.target.value})}
                                                     required
+                                                    disabled={feuille.statut !== 'brouillon'}
                                                 />
                                                 <div className="text-xs text-muted-foreground">
                                                     Format: JJ/MM/AAAA
@@ -1367,87 +1580,90 @@ const FeuilleEncaissementPage = () => {
                                                     placeholder="Sélectionnez un tiers"
                                                     readOnly
                                                     className="flex-1"
+                                                    disabled={feuille.statut !== 'brouillon'}
                                                 />
-                                                <Dialog open={showTiersModal} onOpenChange={setShowTiersModal}>
-                                                    <DialogTrigger asChild>
-                                                        <Button variant="outline" size="sm">
-                                                            <Search className="w-4 h-4" />
-                                                        </Button>
-                                                    </DialogTrigger>
-                                                    <DialogContent className="max-w-2xl">
-                                                        <DialogHeader>
-                                                            <DialogTitle>Sélectionner un tiers</DialogTitle>
-                                                            <DialogDescription>
-                                                                Sélectionnez un tiers dans la liste ci-dessous
-                                                            </DialogDescription>
-                                                        </DialogHeader>
-                                                        <div className="space-y-4">
-                                                            <div className="flex gap-2">
-                                                                <Input
-                                                                    placeholder="Rechercher un tiers..."
-                                                                    value={searchQuery}
-                                                                    onChange={(e) => setSearchQuery(e.target.value)}
-                                                                />
-                                                                <Select value={selectedTiersType} onValueChange={setSelectedTiersType}>
-                                                                    <SelectTrigger className="w-32">
-                                                                        <SelectValue placeholder="Type" />
-                                                                    </SelectTrigger>
-                                                                    <SelectContent>
-                                                                        <SelectItem value="CLIENT">Client</SelectItem>
-                                                                        <SelectItem value="FOURNISSEUR">Fournisseur</SelectItem>
-                                                                        <SelectItem value="AUTRE">Autre</SelectItem>
-                                                                    </SelectContent>
-                                                                </Select>
-                                                                <Button onClick={() => setSearchQuery('')}>
-                                                                    <Search className="w-4 h-4" />
-                                                                </Button>
-                                                            </div>
-                                                            <div className="max-h-60 overflow-y-auto">
-                                                                <Table>
-                                                                    <TableHeader>
-                                                                        <TableRow>
-                                                                            <TableHead>Code</TableHead>
-                                                                            <TableHead>Intitulé</TableHead>
-                                                                            <TableHead>Type</TableHead>
-                                                                            <TableHead>Actions</TableHead>
-                                                                        </TableRow>
-                                                                    </TableHeader>
-                                                                    <TableBody>
-                                                                        {isLoadingTiers ? (
+                                                {feuille.statut === 'brouillon' && (
+                                                    <Dialog open={showTiersModal} onOpenChange={setShowTiersModal}>
+                                                        <DialogTrigger asChild>
+                                                            <Button variant="outline" size="sm">
+                                                                <Search className="w-4 h-4" />
+                                                            </Button>
+                                                        </DialogTrigger>
+                                                        <DialogContent className="max-w-2xl">
+                                                            <DialogHeader>
+                                                                <DialogTitle>Sélectionner un tiers</DialogTitle>
+                                                                <DialogDescription>
+                                                                    Sélectionnez un tiers dans la liste ci-dessous
+                                                                </DialogDescription>
+                                                            </DialogHeader>
+                                                            <div className="space-y-4">
+                                                                <div className="flex gap-2">
+                                                                    <Input
+                                                                        placeholder="Rechercher un tiers..."
+                                                                        value={searchQuery}
+                                                                        onChange={(e) => setSearchQuery(e.target.value)}
+                                                                    />
+                                                                    <Select value={selectedTiersType} onValueChange={setSelectedTiersType}>
+                                                                        <SelectTrigger className="w-32">
+                                                                            <SelectValue placeholder="Type" />
+                                                                        </SelectTrigger>
+                                                                        <SelectContent>
+                                                                            <SelectItem value="CLIENT">Client</SelectItem>
+                                                                            <SelectItem value="FOURNISSEUR">Fournisseur</SelectItem>
+                                                                            <SelectItem value="AUTRE">Autre</SelectItem>
+                                                                        </SelectContent>
+                                                                    </Select>
+                                                                    <Button onClick={() => setSearchQuery('')}>
+                                                                        <Search className="w-4 h-4" />
+                                                                    </Button>
+                                                                </div>
+                                                                <div className="max-h-60 overflow-y-auto">
+                                                                    <Table>
+                                                                        <TableHeader>
                                                                             <TableRow>
-                                                                                <TableCell colSpan={4} className="text-center">
-                                                                                    <Loader2 className="w-4 h-4 animate-spin mx-auto" />
-                                                                                </TableCell>
+                                                                                <TableHead>Code</TableHead>
+                                                                                <TableHead>Intitulé</TableHead>
+                                                                                <TableHead>Type</TableHead>
+                                                                                <TableHead>Actions</TableHead>
                                                                             </TableRow>
-                                                                        ) : tiersList.length === 0 ? (
-                                                                            <TableRow>
-                                                                                <TableCell colSpan={4} className="text-center text-muted-foreground">
-                                                                                    Aucun tiers trouvé
-                                                                                </TableCell>
-                                                                            </TableRow>
-                                                                        ) : (
-                                                                            tiersList.map((tiers) => (
-                                                                                <TableRow key={tiers.id}>
-                                                                                    <TableCell>{tiers.code}</TableCell>
-                                                                                    <TableCell>{tiers.intitule}</TableCell>
-                                                                                    <TableCell>{tiers.typeTiers}</TableCell>
-                                                                                    <TableCell>
-                                                                                        <Button
-                                                                                            size="sm"
-                                                                                            onClick={() => handleTiersSelect(tiers)}
-                                                                                        >
-                                                                                            Sélectionner
-                                                                                        </Button>
+                                                                        </TableHeader>
+                                                                        <TableBody>
+                                                                            {isLoadingTiers ? (
+                                                                                <TableRow>
+                                                                                    <TableCell colSpan={4} className="text-center">
+                                                                                        <Loader2 className="w-4 h-4 animate-spin mx-auto" />
                                                                                     </TableCell>
                                                                                 </TableRow>
-                                                                            ))
-                                                                        )}
-                                                                    </TableBody>
-                                                                </Table>
+                                                                            ) : tiersList.length === 0 ? (
+                                                                                <TableRow>
+                                                                                    <TableCell colSpan={4} className="text-center text-muted-foreground">
+                                                                                        Aucun tiers trouvé
+                                                                                    </TableCell>
+                                                                                </TableRow>
+                                                                            ) : (
+                                                                                tiersList.map((tiers) => (
+                                                                                    <TableRow key={tiers.id}>
+                                                                                        <TableCell>{tiers.code}</TableCell>
+                                                                                        <TableCell>{tiers.intitule}</TableCell>
+                                                                                        <TableCell>{tiers.typeTiers}</TableCell>
+                                                                                        <TableCell>
+                                                                                            <Button
+                                                                                                size="sm"
+                                                                                                onClick={() => handleTiersSelect(tiers)}
+                                                                                            >
+                                                                                                Sélectionner
+                                                                                            </Button>
+                                                                                        </TableCell>
+                                                                                    </TableRow>
+                                                                                ))
+                                                                            )}
+                                                                        </TableBody>
+                                                                    </Table>
+                                                                </div>
                                                             </div>
-                                                        </div>
-                                                    </DialogContent>
-                                                </Dialog>
+                                                        </DialogContent>
+                                                    </Dialog>
+                                                )}
                                             </div>
                                         </div>
 
@@ -1459,6 +1675,7 @@ const FeuilleEncaissementPage = () => {
                                                     onChange={(e) => setFeuille({...feuille, codeClient: e.target.value})}
                                                     placeholder="Code client"
                                                     required
+                                                    disabled={feuille.statut !== 'brouillon'}
                                                 />
                                             </div>
                                             <div className="space-y-2">
@@ -1468,6 +1685,7 @@ const FeuilleEncaissementPage = () => {
                                                     onChange={(e) => setFeuille({...feuille, nomClient: e.target.value})}
                                                     placeholder="Nom du client"
                                                     required
+                                                    disabled={feuille.statut !== 'brouillon'}
                                                 />
                                             </div>
                                         </div>
@@ -1478,6 +1696,7 @@ const FeuilleEncaissementPage = () => {
                                                 <Select
                                                     value={feuille.typeClient}
                                                     onValueChange={(value) => setFeuille({...feuille, typeClient: value as any})}
+                                                    disabled={feuille.statut !== 'brouillon'}
                                                 >
                                                     <SelectTrigger>
                                                         <SelectValue />
@@ -1499,7 +1718,7 @@ const FeuilleEncaissementPage = () => {
                                                         const compte = planComptable.find(pc => pc.id === parseInt(value));
                                                         if (compte) setFeuille({...feuille, compteClient: compte});
                                                     }}
-                                                    disabled={isLoadingPlanComptable}
+                                                    disabled={isLoadingPlanComptable || feuille.statut !== 'brouillon'}
                                                 >
                                                     <SelectTrigger>
                                                         {isLoadingPlanComptable ? (
@@ -1536,6 +1755,7 @@ const FeuilleEncaissementPage = () => {
                                             <Select
                                                 value={feuille.modePaiement}
                                                 onValueChange={handleModePaiementChange}
+                                                disabled={feuille.statut !== 'brouillon'}
                                             >
                                                 <SelectTrigger>
                                                     <SelectValue />
@@ -1558,6 +1778,7 @@ const FeuilleEncaissementPage = () => {
                                                     value={feuille.referenceCheque || ''}
                                                     onChange={(e) => setFeuille({...feuille, referenceCheque: e.target.value})}
                                                     placeholder="N° chèque"
+                                                    disabled={feuille.statut !== 'brouillon'}
                                                 />
                                             </div>
                                         )}
@@ -1569,6 +1790,7 @@ const FeuilleEncaissementPage = () => {
                                                     value={feuille.referenceVirement || ''}
                                                     onChange={(e) => setFeuille({...feuille, referenceVirement: e.target.value})}
                                                     placeholder="Référence virement"
+                                                    disabled={feuille.statut !== 'brouillon'}
                                                 />
                                             </div>
                                         )}
@@ -1580,6 +1802,7 @@ const FeuilleEncaissementPage = () => {
                                                     value={feuille.referenceAutre || ''}
                                                     onChange={(e) => setFeuille({...feuille, referenceAutre: e.target.value})}
                                                     placeholder="Autre référence"
+                                                    disabled={feuille.statut !== 'brouillon'}
                                                 />
                                             </div>
                                         )}
@@ -1595,6 +1818,7 @@ const FeuilleEncaissementPage = () => {
                                                     required
                                                     min="0"
                                                     step="0.01"
+                                                    disabled={feuille.statut !== 'brouillon'}
                                                 />
                                                 <div className="text-xs text-muted-foreground">
                                                     Maximum: {formatMontant(calculateTotalFactures())}
@@ -1635,86 +1859,88 @@ const FeuilleEncaissementPage = () => {
                                 <Card>
                                     <CardHeader className="flex flex-row items-center justify-between">
                                         <CardTitle>Factures associées</CardTitle>
-                                        <Dialog open={showFacturesModal} onOpenChange={setShowFacturesModal}>
-                                            <DialogTrigger asChild>
-                                                <Button size="sm" className="gap-2">
-                                                    <Plus className="w-4 h-4" />
-                                                    Ajouter une facture
-                                                </Button>
-                                            </DialogTrigger>
-                                            <DialogContent className="max-w-4xl">
-                                                <DialogHeader>
-                                                    <DialogTitle className="flex justify-between items-center">
-                                                        <span>Sélectionner une facture</span>
-                                                        <Button
-                                                            size="sm"
-                                                            onClick={() => setShowCreateFactureModal(true)}
-                                                            className="gap-2"
-                                                            variant="outline"
-                                                        >
-                                                            <Plus className="w-4 h-4" />
-                                                            Nouvelle facture
-                                                        </Button>
-                                                    </DialogTitle>
-                                                    <DialogDescription>
-                                                        Sélectionnez une facture impayée ou créez-en une nouvelle
-                                                    </DialogDescription>
-                                                </DialogHeader>
-                                                <div className="space-y-4">
-                                                    <div className="max-h-80 overflow-y-auto">
-                                                        <Table>
-                                                            <TableHeader>
-                                                                <TableRow>
-                                                                    <TableHead>N° Facture</TableHead>
-                                                                    <TableHead>Date</TableHead>
-                                                                    <TableHead>Client</TableHead>
-                                                                    <TableHead>Montant</TableHead>
-                                                                    <TableHead>Solde</TableHead>
-                                                                    <TableHead>Actions</TableHead>
-                                                                </TableRow>
-                                                            </TableHeader>
-                                                            <TableBody>
-                                                                {isLoadingFactures ? (
+                                        {feuille.statut === 'brouillon' && (
+                                            <Dialog open={showFacturesModal} onOpenChange={setShowFacturesModal}>
+                                                <DialogTrigger asChild>
+                                                    <Button size="sm" className="gap-2">
+                                                        <Plus className="w-4 h-4" />
+                                                        Ajouter une facture
+                                                    </Button>
+                                                </DialogTrigger>
+                                                <DialogContent className="max-w-4xl">
+                                                    <DialogHeader>
+                                                        <DialogTitle className="flex justify-between items-center">
+                                                            <span>Sélectionner une facture</span>
+                                                            <Button
+                                                                size="sm"
+                                                                onClick={() => setShowCreateFactureModal(true)}
+                                                                className="gap-2"
+                                                                variant="outline"
+                                                            >
+                                                                <Plus className="w-4 h-4" />
+                                                                Nouvelle facture
+                                                            </Button>
+                                                        </DialogTitle>
+                                                        <DialogDescription>
+                                                            Sélectionnez une facture impayée ou créez-en une nouvelle
+                                                        </DialogDescription>
+                                                    </DialogHeader>
+                                                    <div className="space-y-4">
+                                                        <div className="max-h-80 overflow-y-auto">
+                                                            <Table>
+                                                                <TableHeader>
                                                                     <TableRow>
-                                                                        <TableCell colSpan={6} className="text-center">
-                                                                            <Loader2 className="w-4 h-4 animate-spin mx-auto" />
-                                                                        </TableCell>
+                                                                        <TableHead>N° Facture</TableHead>
+                                                                        <TableHead>Date</TableHead>
+                                                                        <TableHead>Client</TableHead>
+                                                                        <TableHead>Montant</TableHead>
+                                                                        <TableHead>Solde</TableHead>
+                                                                        <TableHead>Actions</TableHead>
                                                                     </TableRow>
-                                                                ) : facturesDisponibles.length === 0 ? (
-                                                                    <TableRow>
-                                                                        <TableCell colSpan={6} className="text-center text-muted-foreground">
-                                                                            Aucune facture/ordre de paiement impayé disponible
-                                                                        </TableCell>
-                                                                    </TableRow>
-                                                                ) : (
-                                                                    facturesDisponibles.map((facture) => (
-                                                                        <TableRow key={facture.id}>
-                                                                            <TableCell>{facture.numero}</TableCell>
-                                                                            <TableCell>{formatDate(facture.dateEmission)}</TableCell>
-                                                                            <TableCell>{facture.tiersNom || facture.tiers?.intitule || '-'}</TableCell>
-                                                                            <TableCell>{facture.montantTotalFormate || formatMontant(facture.montantTotal || facture.montant || 0)}</TableCell>
-                                                                            <TableCell>{facture.soldeFormate || formatMontant(facture.solde)}</TableCell>
-                                                                            <TableCell>
-                                                                                <Button
-                                                                                    size="sm"
-                                                                                    onClick={() => {
-                                                                                        setSelectedFacture(facture);
-                                                                                        handleAddFacture();
-                                                                                    }}
-                                                                                    variant="outline"
-                                                                                >
-                                                                                    Sélectionner
-                                                                                </Button>
+                                                                </TableHeader>
+                                                                <TableBody>
+                                                                    {isLoadingFactures ? (
+                                                                        <TableRow>
+                                                                            <TableCell colSpan={6} className="text-center">
+                                                                                <Loader2 className="w-4 h-4 animate-spin mx-auto" />
                                                                             </TableCell>
                                                                         </TableRow>
-                                                                    ))
-                                                                )}
-                                                            </TableBody>
-                                                        </Table>
+                                                                    ) : facturesDisponibles.length === 0 ? (
+                                                                        <TableRow>
+                                                                            <TableCell colSpan={6} className="text-center text-muted-foreground">
+                                                                                Aucune facture/ordre de paiement impayé disponible
+                                                                            </TableCell>
+                                                                        </TableRow>
+                                                                    ) : (
+                                                                        facturesDisponibles.map((facture) => (
+                                                                            <TableRow key={facture.id}>
+                                                                                <TableCell>{facture.numero}</TableCell>
+                                                                                <TableCell>{formatDate(facture.dateEmission)}</TableCell>
+                                                                                <TableCell>{facture.tiersNom || facture.tiers?.intitule || '-'}</TableCell>
+                                                                                <TableCell>{facture.montantTotalFormate || formatMontant(facture.montantTotal || facture.montant || 0)}</TableCell>
+                                                                                <TableCell>{facture.soldeFormate || formatMontant(facture.solde)}</TableCell>
+                                                                                <TableCell>
+                                                                                    <Button
+                                                                                        size="sm"
+                                                                                        onClick={() => {
+                                                                                            setSelectedFacture(facture);
+                                                                                            handleAddFacture();
+                                                                                        }}
+                                                                                        variant="outline"
+                                                                                    >
+                                                                                        Sélectionner
+                                                                                    </Button>
+                                                                                </TableCell>
+                                                                            </TableRow>
+                                                                        ))
+                                                                    )}
+                                                                </TableBody>
+                                                            </Table>
+                                                        </div>
                                                     </div>
-                                                </div>
-                                            </DialogContent>
-                                        </Dialog>
+                                                </DialogContent>
+                                            </Dialog>
+                                        )}
                                     </CardHeader>
                                     <CardContent>
                                         <Table>
@@ -1723,13 +1949,13 @@ const FeuilleEncaissementPage = () => {
                                                     <TableHead>N° Facture</TableHead>
                                                     <TableHead>Date émission</TableHead>
                                                     <TableHead>Montant</TableHead>
-                                                    <TableHead>Actions</TableHead>
+                                                    {feuille.statut === 'brouillon' && <TableHead>Actions</TableHead>}
                                                 </TableRow>
                                             </TableHeader>
                                             <TableBody>
                                                 {feuille.factures.length === 0 ? (
                                                     <TableRow>
-                                                        <TableCell colSpan={4} className="text-center text-muted-foreground">
+                                                        <TableCell colSpan={feuille.statut === 'brouillon' ? 4 : 3} className="text-center text-muted-foreground">
                                                             Aucune facture associée
                                                         </TableCell>
                                                     </TableRow>
@@ -1739,15 +1965,17 @@ const FeuilleEncaissementPage = () => {
                                                             <TableCell>{facture.numero}</TableCell>
                                                             <TableCell>{formatDate(facture.dateEmission)}</TableCell>
                                                             <TableCell>{formatMontant(facture.montantTotal || facture.montant || 0)}</TableCell>
-                                                            <TableCell>
-                                                                <Button
-                                                                    variant="ghost"
-                                                                    size="sm"
-                                                                    onClick={() => handleRemoveFacture(facture.id)}
-                                                                >
-                                                                    <Trash2 className="w-4 h-4 text-destructive" />
-                                                                </Button>
-                                                            </TableCell>
+                                                            {feuille.statut === 'brouillon' && (
+                                                                <TableCell>
+                                                                    <Button
+                                                                        variant="ghost"
+                                                                        size="sm"
+                                                                        onClick={() => handleRemoveFacture(facture.id)}
+                                                                    >
+                                                                        <Trash2 className="w-4 h-4 text-destructive" />
+                                                                    </Button>
+                                                                </TableCell>
+                                                            )}
                                                         </TableRow>
                                                     ))
                                                 )}
@@ -1772,7 +2000,7 @@ const FeuilleEncaissementPage = () => {
                                                     const compte = comptesTresorerie.find(ct => ct.id === parseInt(value));
                                                     if (compte) setFeuille({...feuille, compteTresorerie: compte});
                                                 }}
-                                                disabled={isLoadingComptes}
+                                                disabled={isLoadingComptes || feuille.statut !== 'brouillon'}
                                             >
                                                 <SelectTrigger>
                                                     {isLoadingComptes ? (
@@ -1819,6 +2047,7 @@ const FeuilleEncaissementPage = () => {
                                                 value={feuille.numeroOrdre || ''}
                                                 onChange={(e) => setFeuille({...feuille, numeroOrdre: e.target.value})}
                                                 placeholder="Numéro d'ordre"
+                                                disabled={feuille.statut !== 'brouillon'}
                                             />
                                         </div>
 
@@ -1828,6 +2057,7 @@ const FeuilleEncaissementPage = () => {
                                                 value={feuille.referenceBonCommande || ''}
                                                 onChange={(e) => setFeuille({...feuille, referenceBonCommande: e.target.value})}
                                                 placeholder="Référence BC"
+                                                disabled={feuille.statut !== 'brouillon'}
                                             />
                                         </div>
                                     </CardContent>
@@ -1843,6 +2073,7 @@ const FeuilleEncaissementPage = () => {
                                             onChange={(e) => setFeuille({...feuille, descriptionOperation: e.target.value})}
                                             placeholder="Description de l'opération..."
                                             rows={4}
+                                            disabled={feuille.statut !== 'brouillon'}
                                         />
                                     </CardContent>
                                 </Card>
@@ -1932,17 +2163,88 @@ const FeuilleEncaissementPage = () => {
                                             </>
                                         )}
 
-                                        {(feuille.statut === 'valide' || feuille.statut === 'pointe') && (
-                                            <Button className="w-full gap-2" variant="outline">
-                                                <Eye className="w-4 h-4" />
-                                                Consulter l'opération de trésorerie
-                                            </Button>
+                                        {feuille.statut === 'valide' && (
+                                            <div className="space-y-2">
+                                                <div className="flex items-center justify-center p-3 bg-green-50 border border-green-200 rounded-md">
+                                                    <CheckCircle className="w-5 h-5 text-green-600 mr-2" />
+                                                    <span className="text-green-800 font-medium">Feuille validée</span>
+                                                </div>
+                                                <Button
+                                                    className="w-full gap-2"
+                                                    variant="outline"
+                                                    onClick={() => {
+                                                        // Optionnel: Voir l'opération de trésorerie
+                                                        if (feuille.operationTresorerie) {
+                                                            toast({
+                                                                title: "Opération de trésorerie",
+                                                                description: "Une opération de trésorerie a été créée automatiquement",
+                                                                variant: "default",
+                                                            });
+                                                        } else {
+                                                            toast({
+                                                                title: "Information",
+                                                                description: "Cette feuille est validée",
+                                                                variant: "default",
+                                                            });
+                                                        }
+                                                    }}
+                                                >
+                                                    <Eye className="w-4 h-4" />
+                                                    {feuille.operationTresorerie ? 'Voir l\'opération' : 'Informations'}
+                                                </Button>
+                                            </div>
+                                        )}
+
+                                        {feuille.statut === 'pointe' && (
+                                            <div className="space-y-2">
+                                                <div className="flex items-center justify-center p-3 bg-blue-50 border border-blue-200 rounded-md">
+                                                    <CheckCircle className="w-5 h-5 text-blue-600 mr-2" />
+                                                    <span className="text-blue-800 font-medium">Feuille pointée</span>
+                                                </div>
+                                                <Button
+                                                    className="w-full gap-2"
+                                                    variant="outline"
+                                                    disabled
+                                                >
+                                                    <Eye className="w-4 h-4" />
+                                                    Opération pointée (lecture seule)
+                                                </Button>
+                                            </div>
+                                        )}
+
+                                        {feuille.statut === 'rejete' && (
+                                            <div className="space-y-2">
+                                                <div className="flex items-center justify-center p-3 bg-red-50 border border-red-200 rounded-md">
+                                                    <XCircle className="w-5 h-5 text-red-600 mr-2" />
+                                                    <span className="text-red-800 font-medium">Feuille rejetée</span>
+                                                </div>
+                                                {feuille.motifRejet && (
+                                                    <div className="text-sm text-red-600 p-2 bg-red-50 border border-red-100 rounded">
+                                                        <span className="font-medium">Motif :</span> {feuille.motifRejet}
+                                                    </div>
+                                                )}
+                                                <Button
+                                                    className="w-full gap-2"
+                                                    variant="outline"
+                                                    onClick={() => {
+                                                        // Option: Corriger et resoumettre
+                                                        toast({
+                                                            title: "Information",
+                                                            description: "Pour corriger cette feuille, créez-en une nouvelle",
+                                                            variant: "default",
+                                                        });
+                                                    }}
+                                                >
+                                                    <RefreshCw className="w-4 h-4" />
+                                                    Créer une nouvelle feuille
+                                                </Button>
+                                            </div>
                                         )}
 
                                         {feuille.id && feuille.statut === 'brouillon' && (
                                             <Button className="w-full gap-2" variant="outline">
                                                 <Trash2 className="w-4 h-4" />
-                                                Annuler
+                                                Annuler la feuille
                                             </Button>
                                         )}
                                     </CardContent>
@@ -2005,7 +2307,7 @@ const FeuilleEncaissementPage = () => {
                                     <Input
                                         id="facture-dateEmission"
                                         type="date"
-                                        value={newFacture.dateEmission}
+                                        value={formatDateForInput(newFacture.dateEmission)} // Utilisation du formateur
                                         onChange={(e) => setNewFacture(prev => ({ ...prev, dateEmission: e.target.value }))}
                                         required
                                     />
@@ -2016,7 +2318,7 @@ const FeuilleEncaissementPage = () => {
                                     <Input
                                         id="facture-dateEcheance"
                                         type="date"
-                                        value={newFacture.dateEcheance || ''}
+                                        value={formatDateForInput(newFacture.dateEcheance)} // Utilisation du formateur
                                         onChange={(e) => setNewFacture(prev => ({ ...prev, dateEcheance: e.target.value || undefined }))}
                                     />
                                 </div>
@@ -2135,8 +2437,8 @@ const FeuilleEncaissementPage = () => {
                                     setShowCreateFactureModal(false);
                                     setNewFacture({
                                         numero: '',
-                                        dateEmission: new Date().toISOString().split('T')[0],
-                                        dateEcheance: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+                                        dateEmission: formatDateForInput(new Date().toISOString()), // Utilisation du formateur
+                                        dateEcheance: formatDateForInput(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()), // Utilisation du formateur
                                         montantTotal: 0,
                                         solde: 0,
                                         statut: 'emise',

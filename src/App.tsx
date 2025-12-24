@@ -85,7 +85,7 @@ const App = () => (
 
                     {/* 🆕 Création Banque - accès admin + super admin */}
                     <Route
-                        path="/parametres/creation-banque"
+                        path="/parametres/CreationBanque"
                         element={
                             <ProtectedRoute allowedRoles={["ROLE_ADMINISTRATEUR", "ROLE_SUPER_ADMIN"]}>
                                 <CreationBanque />
