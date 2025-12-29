@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import MainLayout from "@/components/layout/MainLayout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -58,7 +59,70 @@ import {
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
-const API_URL = "http://127.0.0.1:8000/api/devises";
+// Allow access to Vite env in this file
+declare global {
+    interface ImportMetaEnv {
+        VITE_API_BASE_URL?: string;
+    }
+    interface ImportMeta {
+        readonly env: ImportMetaEnv;
+    }
+}
+
+const API_BASE_URL = "http://127.0.0.1:8000/api";
+const API_BASE = (import.meta.env as any).VITE_API_BASE_URL ?? API_BASE_URL;
+const api = (path: string) => `${API_BASE}/${path.replace(/^\//, "")}`;
+const API_URL = api("/devises");
+
+const getAuthHeaders = (contentType: string | null = "application/json"): HeadersInit => {
+    const token = localStorage.getItem("token");
+    const headers: HeadersInit = {
+        Accept: "application/json",
+    };
+
+    if (contentType) {
+        headers["Content-Type"] = contentType;
+    }
+
+    if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+    }
+
+    return headers;
+};
+
+async function safeJson(res: Response) {
+    const ct = res.headers.get("content-type") || "";
+    if (ct.includes("application/json")) return res.json();
+    const text = await res.text();
+    try { return JSON.parse(text); } catch { return text; }
+}
+
+async function fetchJson(url: string, options: RequestInit = {}, navigate?: any) {
+    const headers = { ...getAuthHeaders(), ...(options.headers || {}) } as HeadersInit;
+    const resp = await fetch(url, { ...options, headers });
+    const data = await safeJson(resp);
+
+    if (resp.status === 401) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        localStorage.setItem("isAuthenticated", "false");
+        if (navigate) navigate("/login");
+        const err: any = new Error("Unauthorized");
+        err.status = 401;
+        err.data = data;
+        throw err;
+    }
+
+    if (!resp.ok) {
+        const err: any = new Error("Request error");
+        err.status = resp.status;
+        err.data = data;
+        throw err;
+    }
+
+    return data;
+}
 
 interface Devise {
     id: number;
@@ -110,6 +174,7 @@ const GestionDevises = () => {
     const [deviseToUpdateRate, setDeviseToUpdateRate] = useState<Devise | null>(null);
 
     const token = localStorage.getItem("token") ?? "";
+    const navigate = useNavigate();
 
     // Charger les devises supportées par l'API
     useEffect(() => {
@@ -117,37 +182,24 @@ const GestionDevises = () => {
             if (!token) return;
             setLoadingSupportedCurrencies(true);
             try {
-                const res = await fetch(`${API_URL}/supported-currencies`, {
-                    headers: { Authorization: `Bearer ${token}` }
-                });
+                const data = await fetchJson(`${API_URL}/supported-currencies`, {}, navigate);
+                const currencies = Array.isArray(data?.devises)
+                    ? data.devises
+                    : Array.isArray((data as any)?.data)
+                        ? (data as any).data
+                        : Array.isArray(data)
+                            ? data
+                            : [];
 
-                let data: any;
-                try {
-                    data = await res.json();
-                } catch {
-                    data = null;
-                }
-
-                if (res.ok && data) {
-                    if (data.success && Array.isArray(data.devises)) {
-                        setSupportedCurrencies(data.devises);
-                    } else if (Array.isArray(data)) {
-                        setSupportedCurrencies(data);
-                    } else if (data.devises && Array.isArray(data.devises)) {
-                        setSupportedCurrencies(data.devises);
-                    } else {
-                        // Fallback si la structure n'est pas reconnue
-                        console.warn("Structure de données non reconnue pour les devises supportées:", data);
-                        setSupportedCurrencies(['EUR', 'USD', 'XOF', 'MGA', 'GBP', 'JPY']);
-                    }
+                if (currencies.length > 0) {
+                    setSupportedCurrencies(currencies);
                 } else {
-                    // En cas d'erreur 404/500, utiliser une liste par défaut
-                    console.warn("Erreur chargement devises supportées:", data?.message || `Status ${res.status}`);
+                    console.warn("Structure de données non reconnue pour les devises supportées:", data);
                     setSupportedCurrencies(['EUR', 'USD', 'XOF', 'MGA', 'GBP', 'JPY']);
                 }
-            } catch (err) {
+            } catch (err: any) {
+                if (err?.status === 401) return handleUnauthorized();
                 console.error("Erreur chargement devises supportées:", err);
-                // Liste de fallback en cas d'erreur réseau
                 setSupportedCurrencies(['EUR', 'USD', 'XOF', 'MGA']);
             } finally {
                 setLoadingSupportedCurrencies(false);
@@ -168,50 +220,32 @@ const GestionDevises = () => {
         });
     };
 
-    const authHeaders = (): HeadersInit => ({
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-    });
-
     const handleUnauthorized = () => {
         toast({
             title: "Non autorisé",
             description: "Veuillez vous reconnecter.",
             variant: "destructive"
         });
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        localStorage.setItem("isAuthenticated", "false");
+        navigate("/login");
     };
 
     const fetchDevises = async () => {
         if (!token) return handleUnauthorized();
         try {
             setLoading(true);
-            const res = await fetch(API_URL, {
-                headers: { Authorization: `Bearer ${token}` }
-            });
-
-            if (res.status === 401) return handleUnauthorized();
-
-            // Gérer les réponses non-JSON
-            let data: any;
-            try {
-                data = await res.json();
-            } catch (jsonError) {
-                console.error("Erreur parsing JSON:", jsonError);
-                throw new Error("Réponse serveur invalide");
-            }
-
-            if (!res.ok) {
-                throw new Error(data?.message || data?.error || `Erreur ${res.status}`);
-            }
+            const data = await fetchJson(API_URL, {}, navigate);
 
             // Adapter selon la structure de la réponse
             let devisesData: any[] = [];
             if (Array.isArray(data)) {
                 devisesData = data;
-            } else if (data.data && Array.isArray(data.data)) {
-                devisesData = data.data;
-            } else if (data.success && Array.isArray(data.data)) {
-                devisesData = data.data;
+            } else if ((data as any).data && Array.isArray((data as any).data)) {
+                devisesData = (data as any).data;
+            } else if ((data as any).success && Array.isArray((data as any).data)) {
+                devisesData = (data as any).data;
             }
 
             const typedData: Devise[] = devisesData.map((d: any) => {
@@ -240,6 +274,7 @@ const GestionDevises = () => {
             setDeviseReference(reference || null);
 
         } catch (err: any) {
+            if (err?.status === 401) return handleUnauthorized();
             console.error(err);
             toast({
                 title: "Erreur",
@@ -333,27 +368,17 @@ const GestionDevises = () => {
         };
 
         try {
-            const res = await fetch(url, {
+            const data = await fetchJson(url, {
                 method,
-                headers: authHeaders(),
                 body: JSON.stringify(payload)
-            });
+            }, navigate);
 
-            if (res.status === 401) return handleUnauthorized();
-
-            let data: any;
-            try {
-                data = await res.json();
-            } catch {
-                data = null;
-            }
-
-            if (!res.ok) {
-                const msg = data?.errors
-                    ? (Array.isArray(data.errors)
-                        ? data.errors.join(" • ")
-                        : Object.values(data.errors).flat().join(" • "))
-                    : data?.message || data?.error || `Erreur ${res.status}`;
+            if ((data as any)?.success === false) {
+                const msg = (data as any)?.errors
+                    ? (Array.isArray((data as any).errors)
+                        ? (data as any).errors.join(" • ")
+                        : Object.values((data as any).errors).flat().join(" • "))
+                    : (data as any)?.message || (data as any)?.error || "Erreur";
                 return toast({
                     title: "Erreur",
                     description: msg,
@@ -371,6 +396,7 @@ const GestionDevises = () => {
             fetchDevises();
 
         } catch (err: any) {
+            if (err?.status === 401) return handleUnauthorized();
             console.error(err);
             toast({
                 title: "Erreur",
@@ -405,29 +431,14 @@ const GestionDevises = () => {
         if (!token) return handleUnauthorized();
 
         try {
-            const res = await fetch(`${API_URL}/${devise.id}/set-reference`, {
-                method: "PUT",
-                headers: authHeaders()
-            });
+            const data = await fetchJson(`${API_URL}/${devise.id}/set-reference`, {
+                method: "PUT"
+            }, navigate);
 
-            if (res.status === 401) return handleUnauthorized();
-
-            let data: any;
-            try {
-                data = await res.json();
-            } catch (err) {
-                console.error("Erreur parsing JSON:", err);
-                return toast({
-                    title: "Erreur serveur",
-                    description: "Réponse invalide du serveur",
-                    variant: "destructive"
-                });
-            }
-
-            if (!res.ok) {
+            if ((data as any)?.success === false) {
                 return toast({
                     title: "Erreur",
-                    description: data?.message || data?.error || `Erreur ${res.status}`,
+                    description: (data as any)?.message || (data as any)?.error || "Erreur",
                     variant: "destructive"
                 });
             }
@@ -440,7 +451,8 @@ const GestionDevises = () => {
             fetchDevises();
             setReferenceDialogOpen(false);
 
-        } catch (err) {
+        } catch (err: any) {
+            if (err?.status === 401) return handleUnauthorized();
             console.error(err);
             toast({
                 title: "Erreur",
@@ -456,23 +468,9 @@ const GestionDevises = () => {
 
         setUpdatingRates(true);
         try {
-            const res = await fetch(`${API_URL}/update-rates`, {
-                method: "POST",
-                headers: authHeaders()
-            });
-
-            if (res.status === 401) return handleUnauthorized();
-
-            let data: any;
-            try {
-                data = await res.json();
-            } catch {
-                data = null;
-            }
-
-            if (!res.ok) {
-                throw new Error(data?.message || data?.error || `Erreur ${res.status}`);
-            }
+            const data = await fetchJson(`${API_URL}/update-rates`, {
+                method: "POST"
+            }, navigate);
 
             toast({
                 title: "Taux mis à jour",
@@ -482,6 +480,7 @@ const GestionDevises = () => {
             fetchDevises();
 
         } catch (err: any) {
+            if (err?.status === 401) return handleUnauthorized();
             console.error(err);
             toast({
                 title: "Erreur",
@@ -498,23 +497,9 @@ const GestionDevises = () => {
         if (!token) return handleUnauthorized();
 
         try {
-            const res = await fetch(`${API_URL}/${devise.id}/update-rate`, {
-                method: "PUT",
-                headers: authHeaders()
-            });
-
-            if (res.status === 401) return handleUnauthorized();
-
-            let data: any;
-            try {
-                data = await res.json();
-            } catch {
-                data = null;
-            }
-
-            if (!res.ok) {
-                throw new Error(data?.message || data?.error || `Erreur ${res.status}`);
-            }
+            const data = await fetchJson(`${API_URL}/${devise.id}/update-rate`, {
+                method: "PUT"
+            }, navigate);
 
             toast({
                 title: "Taux mis à jour",
@@ -525,6 +510,7 @@ const GestionDevises = () => {
             setUpdateRateDialogOpen(false);
 
         } catch (err: any) {
+            if (err?.status === 401) return handleUnauthorized();
             console.error(err);
             toast({
                 title: "Erreur",
@@ -539,23 +525,9 @@ const GestionDevises = () => {
         if (!token) return handleUnauthorized();
 
         try {
-            const res = await fetch(`${API_URL}/clear-cache`, {
-                method: "POST",
-                headers: authHeaders()
-            });
-
-            if (res.status === 401) return handleUnauthorized();
-
-            let data: any;
-            try {
-                data = await res.json();
-            } catch {
-                data = null;
-            }
-
-            if (!res.ok) {
-                throw new Error(data?.message || data?.error || `Erreur ${res.status}`);
-            }
+            const data = await fetchJson(`${API_URL}/clear-cache`, {
+                method: "POST"
+            }, navigate);
 
             toast({
                 title: "Cache nettoyé",
@@ -563,6 +535,7 @@ const GestionDevises = () => {
             });
 
         } catch (err: any) {
+            if (err?.status === 401) return handleUnauthorized();
             console.error(err);
             toast({
                 title: "Erreur",
@@ -576,44 +549,16 @@ const GestionDevises = () => {
         if (!deviseToDelete || !token) return;
 
         try {
-            const res = await fetch(`${API_URL}/${deviseToDelete.id}`, {
-                method: "DELETE",
-                headers: { Authorization: `Bearer ${token}` }
-            });
+            const data: any = await fetchJson(`${API_URL}/${deviseToDelete.id}`, {
+                method: "DELETE"
+            }, navigate);
 
-            if (res.status === 401) return handleUnauthorized();
-
-            let data: any;
-            try {
-                data = await res.json();
-            } catch {
-                data = null;
-            }
-
-            if (!res.ok) {
-                const errorMsg = data?.message || data?.error || data?.errors || `Erreur ${res.status}`;
-
-                if (res.status === 400 && errorMsg.includes("utilisée")) {
-                    toast({
-                        title: "Devise utilisée",
-                        description: "La devise ne peut être supprimée car elle est utilisée. Voulez-vous la désactiver ?",
-                        variant: "destructive",
-                        action: (
-                            <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => handleDesactiver(deviseToDelete.id)}
-                            >
-                                Désactiver
-                            </Button>
-                        )
-                    });
-                    return;
-                }
+            if ((data as any)?.success === false) {
+                const errorMsg = (data as any)?.message || (data as any)?.error || (data as any)?.errors || "Erreur";
 
                 return toast({
                     title: "Erreur",
-                    description: errorMsg,
+                    description: errorMsg as string,
                     variant: "destructive"
                 });
             }
@@ -627,11 +572,35 @@ const GestionDevises = () => {
             setDeleteDialogOpen(false);
             setDeviseToDelete(null);
 
-        } catch (err) {
+        } catch (err: any) {
+            if (err?.status === 401) return handleUnauthorized();
+
+            const errorMsg = err?.data?.message || err?.data?.error || err?.message;
+            if (err?.status === 400 && typeof errorMsg === "string" && deviseToDelete) {
+                const messageToShow = errorMsg || "La devise ne peut pas être supprimée";
+                if (messageToShow.toLowerCase().includes("utilisée")) {
+                    toast({
+                        title: "Devise utilisée",
+                        description: messageToShow,
+                        variant: "destructive",
+                        action: (
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleDesactiver(deviseToDelete.id)}
+                            >
+                                Désactiver
+                            </Button>
+                        )
+                    });
+                    return;
+                }
+            }
+
             console.error(err);
             toast({
                 title: "Erreur",
-                description: "Impossible de supprimer la devise",
+                description: errorMsg || "Impossible de supprimer la devise",
                 variant: "destructive"
             });
         }
@@ -641,26 +610,16 @@ const GestionDevises = () => {
         if (!token) return handleUnauthorized();
 
         try {
-            const res = await fetch(`${API_URL}/${id}/desactiver`, {
+            const data = await fetchJson(`${API_URL}/${id}/desactiver`, {
                 method: "PUT",
-                headers: authHeaders(),
                 body: JSON.stringify({ statut: "INACTIF" })
-            });
+            }, navigate);
 
-            if (res.status === 401) return handleUnauthorized();
-
-            let data: any;
-            try {
-                data = await res.json();
-            } catch {
-                data = null;
-            }
-
-            if (!res.ok) {
-                const errorMsg = data?.message || data?.error || data?.errors || `Erreur ${res.status}`;
+            if ((data as any)?.success === false) {
+                const errorMsg = (data as any)?.message || (data as any)?.error || (data as any)?.errors || "Erreur";
                 return toast({
                     title: "Erreur",
-                    description: errorMsg,
+                    description: errorMsg as string,
                     variant: "destructive"
                 });
             }
@@ -672,7 +631,8 @@ const GestionDevises = () => {
 
             fetchDevises();
 
-        } catch (err) {
+        } catch (err: any) {
+            if (err?.status === 401) return handleUnauthorized();
             console.error(err);
             toast({
                 title: "Erreur",
@@ -686,26 +646,16 @@ const GestionDevises = () => {
         if (!token) return handleUnauthorized();
 
         try {
-            const res = await fetch(`${API_URL}/${id}/reactiver`, {
+            const data = await fetchJson(`${API_URL}/${id}/reactiver`, {
                 method: "PUT",
-                headers: authHeaders(),
                 body: JSON.stringify({ statut: "ACTIF" })
-            });
+            }, navigate);
 
-            if (res.status === 401) return handleUnauthorized();
-
-            let data: any;
-            try {
-                data = await res.json();
-            } catch {
-                data = null;
-            }
-
-            if (!res.ok) {
-                const errorMsg = data?.message || data?.error || data?.errors || `Erreur ${res.status}`;
+            if ((data as any)?.success === false) {
+                const errorMsg = (data as any)?.message || (data as any)?.error || (data as any)?.errors || "Erreur";
                 return toast({
                     title: "Erreur",
-                    description: errorMsg,
+                    description: errorMsg as string,
                     variant: "destructive"
                 });
             }
@@ -717,7 +667,8 @@ const GestionDevises = () => {
 
             fetchDevises();
 
-        } catch (err) {
+        } catch (err: any) {
+            if (err?.status === 401) return handleUnauthorized();
             console.error(err);
             toast({
                 title: "Erreur",

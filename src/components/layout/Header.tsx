@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { Bell, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,7 +22,8 @@ const ROLE_LABELS: Record<string, string> = {
 };
 
 const Header = () => {
-    const [user, setUser] = useState<{ firstName?: string; lastName?: string; roles?: string[] }>({});
+    const [user, setUser] = useState<any>({});
+    const navigate = useNavigate();
 
     // Charge l'utilisateur depuis localStorage au montage
     const loadUser = () => {
@@ -55,7 +57,14 @@ const Header = () => {
         ? `${user.firstName || ""} ${user.lastName || ""}`.trim()
         : "Invité";
 
-    const displayRole = ROLE_LABELS[user.roles?.[0] || ""] || "Aucun rôle";
+    // Normaliser les rôles venant soit de `roles` (array de string) soit de `roleEntities` (array d'objets)
+    const rolesFromUser: string[] = Array.isArray(user.roles)
+        ? user.roles
+        : Array.isArray(user.roleEntities)
+            ? user.roleEntities.map((r: any) => r.code).filter(Boolean)
+            : [];
+
+    const displayRole = ROLE_LABELS[rolesFromUser[0] || ""] || (rolesFromUser[0] || "Aucun rôle");
 
     return (
         <header className="h-16 border-b border-border bg-card px-6 flex items-center justify-between shadow-soft">
@@ -96,7 +105,7 @@ const Header = () => {
                     <DropdownMenuContent align="end" className="w-56">
                         <DropdownMenuLabel>Mon compte</DropdownMenuLabel>
                         <DropdownMenuSeparator />
-                        <DropdownMenuItem>Profil</DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => navigate('/profile')}>Profil</DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
                             className="text-destructive"

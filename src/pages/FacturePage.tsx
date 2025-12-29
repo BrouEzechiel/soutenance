@@ -1,5 +1,6 @@
 import MainLayout from "@/components/layout/MainLayout";
 import { useState, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -186,8 +187,84 @@ const TYPE_TIERS = {
 
 const API_BASE_URL = "http://127.0.0.1:8000/api";
 
+// Helper pour construire les URLs d'API
+const api = (path: string) => path.startsWith('http') ? path : `${API_BASE_URL}${path}`;
+
+// Helper pour parser les réponses JSON de manière sécurisée
+const safeJson = async (res: Response) => {
+    try {
+        const txt = await res.text();
+        const trimmed = txt.trim();
+        if (trimmed.startsWith('<')) {
+            console.error('Expected JSON but received HTML:', trimmed.substring(0, 500));
+            return null;
+        }
+        return JSON.parse(trimmed);
+    } catch (e) {
+        console.error('Failed to parse JSON response', e);
+        return null;
+    }
+};
+
+// Wrapper fetch centralisé avec gestion de l'authentification et des erreurs 401
+const fetchJson = async (url: string, opts: RequestInit = {}, navigate?: any) => {
+    const token = localStorage.getItem('token') || localStorage.getItem('auth_token') || null;
+    const headers: Record<string, string> = { ...(opts.headers as Record<string, string> || {}) };
+    if (!headers['Content-Type'] && opts.body && typeof opts.body === 'string') {
+        headers['Content-Type'] = 'application/json';
+    }
+    if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+    }
+    const res = await fetch(url, { ...opts, headers });
+    // Gestion des erreurs 401 (token expiré/invalide)
+    if (res.status === 401) {
+        try {
+            localStorage.removeItem('token');
+            localStorage.removeItem('user');
+            localStorage.removeItem('isAuthenticated');
+        } catch (e) {
+            // ignore
+        }
+        if (navigate) {
+            navigate('/login');
+        } else if (typeof window !== 'undefined' && window.location) {
+            window.location.href = '/login';
+        }
+    }
+    return res;
+};
+
+// Fonction pour décoder un JWT sans dépendance externe
+const decodeJWT = (token: string): any => {
+    try {
+        // Un JWT est composé de 3 parties séparées par des points
+        const base64Url = token.split('.')[1];
+        if (!base64Url) {
+            throw new Error("Token JWT invalide");
+        }
+        
+        // Remplacer les caractères spécifiques au base64Url
+        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+        
+        // Décoder la chaîne base64
+        const jsonPayload = decodeURIComponent(
+            atob(base64)
+                .split('')
+                .map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+                .join('')
+        );
+        
+        return JSON.parse(jsonPayload);
+    } catch (error) {
+        console.error("Erreur lors du décodage du JWT:", error);
+        return {};
+    }
+};
+
 const FacturePage = () => {
     const { toast } = useToast();
+    const navigate = useNavigate();
     const [factures, setFactures] = useState<Facture[]>([]);
     const [loading, setLoading] = useState(true);
     const [submitting, setSubmitting] = useState(false);
@@ -232,8 +309,12 @@ const FacturePage = () => {
         statut: "brouillon",
     });
 
+    const [companyCurrencyCode, setCompanyCurrencyCode] = useState<string | null>("EUR");
+    const [companyCurrencySymbol, setCompanyCurrencySymbol] = useState<string | null>(null);
+
     const [dateEmissionOpen, setDateEmissionOpen] = useState(false);
     const [dateEcheanceOpen, setDateEcheanceOpen] = useState(false);
+    const [userRoles, setUserRoles] = useState<string[]>([]);
 
     const getAuthHeaders = (): Record<string, string> => {
         const headers: Record<string, string> = {
@@ -251,6 +332,35 @@ const FacturePage = () => {
         }
 
         return headers;
+    };
+
+    const fetchUserRoles = () => {
+        try {
+            const token = localStorage.getItem("auth_token") ||
+                localStorage.getItem("token") ||
+                sessionStorage.getItem("auth_token") ||
+                sessionStorage.getItem("token");
+
+            if (token && token !== "null" && token !== "undefined") {
+                const decoded = decodeJWT(token);
+                setUserRoles(decoded.roles || []);
+            }
+        } catch (error) {
+            console.error("Erreur lors du décodage du token:", error);
+            setUserRoles([]);
+        }
+    };
+
+    const canEditAnnulee = (): boolean => {
+        return userRoles.includes('ROLE_ADMINISTRATEUR') || userRoles.includes('ROLE_SUPER_ADMIN');
+    };
+
+    const canEditPayee = (): boolean => {
+        return userRoles.includes('ROLE_ADMINISTRATEUR') || userRoles.includes('ROLE_SUPER_ADMIN');
+    };
+
+    const canDeleteFacture = (): boolean => {
+        return userRoles.includes('ROLE_ADMINISTRATEUR') || userRoles.includes('ROLE_SUPER_ADMIN');
     };
 
     const getStatutBadge = (statut: string) => {
@@ -309,18 +419,34 @@ const FacturePage = () => {
     };
 
     const formatMontant = (montant: string | number | undefined | null): string => {
-        if (montant === undefined || montant === null || montant === "") {
-            return "0,00 €";
+        const montantNum = (montant === undefined || montant === null || montant === "")
+            ? 0
+            : (typeof montant === 'string' ? parseFloat(montant) : montant);
+
+        // Try to use currency code with Intl if available
+        if (companyCurrencyCode) {
+            try {
+                return new Intl.NumberFormat('fr-FR', {
+                    style: 'currency',
+                    currency: companyCurrencyCode,
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2
+                }).format(montantNum as number);
+            } catch (e) {
+                console.warn('Intl formatting failed for', companyCurrencyCode, e);
+            }
         }
 
-        const montantNum = typeof montant === 'string' ? parseFloat(montant) : montant;
-
-        return new Intl.NumberFormat('fr-FR', {
-            style: 'currency',
-            currency: 'EUR',
+        // Fallback: format number and append company symbol if present
+        const formatted = new Intl.NumberFormat('fr-FR', {
             minimumFractionDigits: 2,
             maximumFractionDigits: 2
-        }).format(montantNum);
+        }).format(montantNum as number);
+
+        if (companyCurrencySymbol) return `${formatted} ${companyCurrencySymbol}`;
+
+        // Final fallback to Euro symbol
+        return `${formatted} €`;
     };
 
     const formatNumber = (num: number | string | undefined | null): string => {
@@ -335,10 +461,35 @@ const FacturePage = () => {
     };
 
     useEffect(() => {
+        fetchUserRoles();
         fetchData();
         fetchReferences();
         fetchStats();
     }, [pagination.page, searchTerm, filterTiers, filterStatut, filterEnRetard, dateFrom, dateTo]);
+
+    // Définir la devise (code et symbole) de la société de l'utilisateur connecté (si disponible)
+    useEffect(() => {
+        try {
+            const userStr = localStorage.getItem('user');
+            if (userStr) {
+                const u = JSON.parse(userStr);
+                const code = u?.societe?.deviseParDefaut?.code || u?.societe?.devise?.code || u?.societe?.deviseCode || null;
+                const symbole = u?.societe?.deviseParDefaut?.symbole || u?.societe?.devise?.symbole || u?.societe?.deviseSymbole || null;
+                
+                console.log('Currency from localStorage:', { code, symbole, societe: u?.societe });
+                
+                setCompanyCurrencyCode(code ?? 'EUR');
+                setCompanyCurrencySymbol(symbole ?? null);
+            } else {
+                console.warn('No user in localStorage');
+                setCompanyCurrencyCode('EUR');
+            }
+        } catch (e) {
+            console.error('Erreur lecture user pour devise:', e);
+            setCompanyCurrencyCode('EUR');
+            setCompanyCurrencySymbol(null);
+        }
+    }, []);
 
     const fetchReferences = async () => {
         try {
@@ -346,7 +497,7 @@ const FacturePage = () => {
 
             // Récupérer les tiers
             try {
-                const tiersResponse = await fetch(`${API_BASE_URL}/tiers?statut=ACTIF&limit=100`, { headers });
+                const tiersResponse = await fetchJson(`${API_BASE_URL}/tiers?statut=ACTIF&limit=100`, {}, navigate);
                 if (tiersResponse.ok) {
                     const data = await tiersResponse.json();
                     if (data.success) {
@@ -359,7 +510,7 @@ const FacturePage = () => {
 
             // Récupérer les comptes comptables
             try {
-                const comptesResponse = await fetch(`${API_BASE_URL}/plan-comptables?statut=ACTIF&limit=100`, { headers });
+                const comptesResponse = await fetchJson(`${API_BASE_URL}/plan-comptables?statut=ACTIF&limit=100`, {}, navigate);
                 if (comptesResponse.ok) {
                     const data = await comptesResponse.json();
                     if (data.success) {
@@ -396,7 +547,7 @@ const FacturePage = () => {
 
             const url = `${API_BASE_URL}/factures?${params.toString()}`;
 
-            const response = await fetch(url, { headers });
+            const response = await fetchJson(url, {}, navigate);
 
             if (response.status === 401) {
                 setError("Non authentifié. Veuillez vous connecter.");
@@ -440,7 +591,7 @@ const FacturePage = () => {
     const fetchStats = async () => {
         try {
             const headers = getAuthHeaders();
-            const response = await fetch(`${API_BASE_URL}/factures/stats`, { headers });
+            const response = await fetchJson(`${API_BASE_URL}/factures/stats`, {}, navigate);
 
             if (response.ok) {
                 const data = await response.json();
@@ -500,12 +651,36 @@ const FacturePage = () => {
             errors.push("Le montant doit être supérieur à 0");
         }
 
+        // Validation stricte de l'ID du tiers
         if (!formData.tiersId) {
             errors.push("Le tiers est obligatoire");
+        } else {
+            const tiersExists = tiersList.some(t => t.id === formData.tiersId);
+            if (!tiersExists) {
+                errors.push("Le tiers sélectionné n'existe pas ou n'est plus actif");
+            }
+        }
+
+        // Validation stricte de l'ID du compte comptable si fourni
+        if (formData.compteComptableId) {
+            const compteExists = comptes.some(c => c.id === formData.compteComptableId);
+            if (!compteExists) {
+                errors.push("Le compte comptable sélectionné n'existe pas ou n'est plus actif");
+            }
         }
 
         if (formData.dateEcheance && new Date(formData.dateEcheance) < new Date(formData.dateEmission)) {
             errors.push("La date d'échéance ne peut pas être antérieure à la date d'émission");
+        }
+
+        // Vérification des permissions pour modifier une facture annulée ou payée
+        if (editMode && selectedFacture) {
+            if (selectedFacture.statut === 'annulee' && !canEditAnnulee()) {
+                errors.push("Vous n'avez pas les permissions pour modifier une facture annulée");
+            }
+            if (selectedFacture.statut === 'payee' && !canEditPayee()) {
+                errors.push("Vous n'avez pas les permissions pour modifier une facture payée");
+            }
         }
 
         return errors;
@@ -555,16 +730,16 @@ const FacturePage = () => {
 
             console.log('Données envoyées:', requestData);
 
-            const response = await fetch(url, {
+            const response = await fetchJson(url, {
                 method,
-                headers: getAuthHeaders(),
-                body: JSON.stringify(requestData),
-            });
+                body: JSON.stringify(requestData)
+            }, navigate);
 
             const responseData = await response.json();
             console.log('Réponse serveur:', responseData);
 
             if (!response.ok) {
+                // Gestion détaillée des erreurs spécifiques du backend
                 if (response.status === 400 && responseData.errors) {
                     const firstError = Object.entries(responseData.errors)[0];
                     if (firstError) {
@@ -575,10 +750,37 @@ const FacturePage = () => {
                             variant: "destructive",
                         });
                     }
+                } else if (response.status === 403) {
+                    toast({
+                        title: "Accès refusé",
+                        description: responseData.message || "Vous n'avez pas les permissions nécessaires pour effectuer cette action",
+                        variant: "destructive",
+                    });
+                } else if (response.status === 404) {
+                    toast({
+                        title: "Ressource introuvable",
+                        description: responseData.message || "La ressource demandée n'existe pas",
+                        variant: "destructive",
+                    });
+                } else if (response.status === 409) {
+                    toast({
+                        title: "Conflit",
+                        description: responseData.message || "Une facture avec ce numéro existe déjà",
+                        variant: "destructive",
+                    });
                 } else if (responseData.message) {
+                    // Gestion des messages d'erreur spécifiques du backend
+                    let errorMessage = responseData.message;
+                    if (errorMessage.includes('Tiers invalide')) {
+                        errorMessage = "Le tiers sélectionné n'existe pas ou n'est plus actif";
+                    } else if (errorMessage.includes('Compte comptable invalide')) {
+                        errorMessage = "Le compte comptable sélectionné n'existe pas ou n'est plus actif";
+                    } else if (errorMessage.includes('permission')) {
+                        errorMessage = "Vous n'avez pas les permissions nécessaires pour cette opération";
+                    }
                     toast({
                         title: "Erreur",
-                        description: responseData.message,
+                        description: errorMessage,
                         variant: "destructive",
                     });
                 }
@@ -628,6 +830,26 @@ const FacturePage = () => {
     };
 
     const handleEdit = (facture: Facture) => {
+        // Vérifier les permissions pour les factures payées ou annulées
+        if (facture.statut === 'annulee' && !canEditAnnulee()) {
+            toast({
+                title: "Accès refusé",
+                description: "Seuls les administrateurs peuvent modifier une facture annulée",
+                variant: "destructive",
+            });
+            return;
+        }
+
+        if (facture.statut === 'payee' && !canEditPayee()) {
+            toast({
+                title: "Accès refusé",
+                description: "Seuls les administrateurs peuvent modifier une facture payée",
+                variant: "destructive",
+            });
+            return;
+        }
+
+        setSelectedFacture(facture);
         setFormData({
             id: facture.id,
             numero: facture.numero,
@@ -655,15 +877,23 @@ const FacturePage = () => {
     };
 
     const handleDelete = async (id: number) => {
+        if (!canDeleteFacture()) {
+            toast({
+                title: "Accès refusé",
+                description: "Seuls les administrateurs peuvent supprimer une facture",
+                variant: "destructive",
+            });
+            return;
+        }
+
         if (!confirm("Êtes-vous sûr de vouloir supprimer définitivement cette facture ? Cette action est irréversible.")) {
             return;
         }
 
         try {
-            const response = await fetch(`${API_BASE_URL}/factures/${id}`, {
-                method: "DELETE",
-                headers: getAuthHeaders(),
-            });
+            const response = await fetchJson(`${API_BASE_URL}/factures/${id}`, {
+                method: "DELETE"
+            }, navigate);
 
             const data = await response.json();
 
@@ -699,11 +929,10 @@ const FacturePage = () => {
         }
 
         try {
-            const response = await fetch(`${API_BASE_URL}/factures/${selectedFacture.id}/paiement`, {
+            const response = await fetchJson(`${API_BASE_URL}/factures/${selectedFacture.id}/paiement`, {
                 method: "POST",
-                headers: getAuthHeaders(),
-                body: JSON.stringify({ montant: montantPaiement }),
-            });
+                body: JSON.stringify({ montant: montantPaiement })
+            }, navigate);
 
             const data = await response.json();
 
@@ -732,11 +961,10 @@ const FacturePage = () => {
 
     const handleChangerStatut = async (id: number, nouveauStatut: string) => {
         try {
-            const response = await fetch(`${API_BASE_URL}/factures/${id}`, {
+            const response = await fetchJson(`${API_BASE_URL}/factures/${id}`, {
                 method: "PUT",
-                headers: getAuthHeaders(),
-                body: JSON.stringify({ statut: nouveauStatut }),
-            });
+                body: JSON.stringify({ statut: nouveauStatut })
+            }, navigate);
 
             const data = await response.json();
 
@@ -784,9 +1012,7 @@ const FacturePage = () => {
 
     const handleExportCsv = async () => {
         try {
-            const response = await fetch(`${API_BASE_URL}/factures/export/csv`, {
-                headers: getAuthHeaders(),
-            });
+            const response = await fetchJson(`${API_BASE_URL}/factures/export/csv`, {}, navigate);
 
             if (!response.ok) {
                 throw new Error("Erreur lors de l'export");

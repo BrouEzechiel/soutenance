@@ -1,5 +1,6 @@
 import MainLayout from "@/components/layout/MainLayout";
 import { useState, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -92,6 +93,74 @@ import { Calendar as CalendarComponent } from "@/components/ui/calendar";
 import { format } from "date-fns";
 import { fr } from "date-fns/locale";
 import { cn } from "@/lib/utils";
+
+// Allow access to Vite env in this file
+declare global {
+    interface ImportMetaEnv {
+        VITE_API_BASE_URL?: string;
+    }
+    interface ImportMeta {
+        readonly env: ImportMetaEnv;
+    }
+}
+
+const API_BASE_URL = "http://127.0.0.1:8000/api";
+const API_BASE = (import.meta.env as any).VITE_API_BASE_URL ?? API_BASE_URL;
+const api = (path: string) => `${API_BASE}/${path.replace(/^\//, "")}`;
+
+const getAuthHeaders = (contentType: string | null = "application/json"): HeadersInit => {
+    const token = localStorage.getItem("token");
+    const headers: HeadersInit = {
+        Accept: "application/json",
+    };
+
+    if (contentType) {
+        headers["Content-Type"] = contentType;
+    }
+
+    if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+    }
+
+    return headers;
+};
+
+async function safeJson(res: Response) {
+    const ct = res.headers.get("content-type") || "";
+    if (ct.includes("application/json")) return res.json();
+    const text = await res.text();
+    try {
+        return JSON.parse(text);
+    } catch {
+        return text;
+    }
+}
+
+async function fetchJson(url: string, options: RequestInit = {}, navigate?: any) {
+    const headers = { ...getAuthHeaders(), ...(options.headers || {}) } as HeadersInit;
+    const resp = await fetch(url, { ...options, headers });
+    const data = await safeJson(resp);
+
+    if (resp.status === 401) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        localStorage.setItem("isAuthenticated", "false");
+        if (navigate) navigate("/login");
+        const err: any = new Error("Unauthorized");
+        err.status = 401;
+        err.data = data;
+        throw err;
+    }
+
+    if (!resp.ok) {
+        const err: any = new Error("Request error");
+        err.status = resp.status;
+        err.data = data;
+        throw err;
+    }
+
+    return data;
+}
 
 // CORRECTION DES TYPES : baseCalcul peut être string, undefined ou null
 interface ChargeSociale {
@@ -272,10 +341,9 @@ const STATUTS = {
     annule: "Annulé",
 };
 
-const API_BASE_URL = "http://127.0.0.1:8000/api";
-
 const ChargeSocialePage = () => {
     const { toast } = useToast();
+    const navigate = useNavigate();
     const [charges, setCharges] = useState<ChargeSociale[]>([]);
     const [loading, setLoading] = useState(true);
     const [submitting, setSubmitting] = useState(false);
@@ -463,50 +531,42 @@ const ChargeSocialePage = () => {
 
     const fetchReferences = async () => {
         try {
-            const headers = getAuthHeaders();
-
             try {
-                const societeResponse = await fetch(`${API_BASE_URL}/societes/actives`, {
-                    headers
-                });
+                const data = await fetchJson(api("societes/actives"), {}, navigate);
 
-                if (societeResponse.ok) {
-                    const data = await societeResponse.json();
+                if (data.success && data.data && data.data.length > 0) {
+                    const societeData = data.data[0];
+                    const societeInfo: Societe = {
+                        id: societeData.id,
+                        raisonSociale: societeData.raisonSociale,
+                        code: societeData.code || "",
+                        deviseParDefaut: societeData.deviseParDefaut,
+                        planComptable: societeData.planComptable,
+                        forme: societeData.forme,
+                        activites: societeData.activites,
+                        registreCommerce: societeData.registreCommerce,
+                        compteContribuable: societeData.compteContribuable,
+                        telephone: societeData.telephone,
+                        anneeDebutActivite: societeData.anneeDebutActivite,
+                        adresse: societeData.adresse,
+                        siegeSocial: societeData.siegeSocial,
+                        capitalSocial: societeData.capitalSocial,
+                        gerant: societeData.gerant,
+                        statut: societeData.statut,
+                        emailContact: societeData.emailContact,
+                        createdAt: societeData.createdAt,
+                        updatedAt: societeData.updatedAt,
+                        estActive: societeData.estActive,
+                        formeLibelleComplet: societeData.formeLibelleComplet
+                    };
 
-                    if (data.success && data.data && data.data.length > 0) {
-                        const societeData = data.data[0];
-                        const societeInfo: Societe = {
-                            id: societeData.id,
-                            raisonSociale: societeData.raisonSociale,
-                            code: societeData.code || "",
-                            deviseParDefaut: societeData.deviseParDefaut,
-                            planComptable: societeData.planComptable,
-                            forme: societeData.forme,
-                            activites: societeData.activites,
-                            registreCommerce: societeData.registreCommerce,
-                            compteContribuable: societeData.compteContribuable,
-                            telephone: societeData.telephone,
-                            anneeDebutActivite: societeData.anneeDebutActivite,
-                            adresse: societeData.adresse,
-                            siegeSocial: societeData.siegeSocial,
-                            capitalSocial: societeData.capitalSocial,
-                            gerant: societeData.gerant,
-                            statut: societeData.statut,
-                            emailContact: societeData.emailContact,
-                            createdAt: societeData.createdAt,
-                            updatedAt: societeData.updatedAt,
-                            estActive: societeData.estActive,
-                            formeLibelleComplet: societeData.formeLibelleComplet
-                        };
+                    setSociete(societeInfo);
 
-                        setSociete(societeInfo);
-
-                        if (societeData.deviseParDefaut) {
-                            setFormData(prev => ({
-                                ...prev,
-                                deviseId: societeData.deviseParDefaut.id
-                            }));
-                        }
+                    if (societeData.deviseParDefaut) {
+                        setFormData(prev => ({
+                            ...prev,
+                            deviseId: societeData.deviseParDefaut.id
+                        }));
                     }
                 }
             } catch (error) {
@@ -514,51 +574,44 @@ const ChargeSocialePage = () => {
             }
 
             try {
-                const comptesResponse = await fetch(
-                    `${API_BASE_URL}/plan-comptables?statut=ACTIF&limit=100`,
-                    { headers }
+                const data = await fetchJson(
+                    api("plan-comptables?statut=ACTIF&limit=100"),
+                    {},
+                    navigate
                 );
 
-                if (comptesResponse.ok) {
-                    const data = await comptesResponse.json();
-                    if (data.success) {
-                        const comptesFiltres = (data.data || []).filter((compte: any) =>
-                            compte.codeCompte.startsWith('64') ||
-                            compte.codeCompte.startsWith('63')
-                        );
-                        setComptes(comptesFiltres);
-                    }
+                if (data.success) {
+                    const comptesFiltres = (data.data || []).filter((compte: any) =>
+                        compte.codeCompte.startsWith('64') ||
+                        compte.codeCompte.startsWith('63')
+                    );
+                    setComptes(comptesFiltres);
                 }
             } catch (error) {
                 console.error("Erreur chargement comptes:", error);
             }
 
             try {
-                const devisesResponse = await fetch(`${API_BASE_URL}/devises?statut=ACTIF`, { headers });
-                if (devisesResponse.ok) {
-                    const data = await devisesResponse.json();
-                    if (data.success) {
-                        setDevises(data.data || []);
-                    }
+                const data = await fetchJson(api("devises?statut=ACTIF"), {}, navigate);
+                if (data.success) {
+                    setDevises(data.data || []);
                 }
             } catch (error) {
                 console.error("Erreur chargement devises:", error);
             }
 
             try {
-                const ordresResponse = await fetch(
-                    `${API_BASE_URL}/ordre-paiement?limit=50&sortBy=createdAt&sortOrder=DESC`,
-                    { headers }
+                const data = await fetchJson(
+                    api("ordre-paiement?limit=50&sortBy=createdAt&sortOrder=DESC"),
+                    {},
+                    navigate
                 );
 
-                if (ordresResponse.ok) {
-                    const data = await ordresResponse.json();
-                    if (data.success) {
-                        const ordresActifs = (data.data || []).filter((ordre: any) =>
-                            ordre.statut !== 'annule' && ordre.statut !== 'rejete'
-                        );
-                        setOrdresPaiement(ordresActifs);
-                    }
+                if (data.success) {
+                    const ordresActifs = (data.data || []).filter((ordre: any) =>
+                        ordre.statut !== 'annule' && ordre.statut !== 'rejete'
+                    );
+                    setOrdresPaiement(ordresActifs);
                 }
             } catch (error) {
                 console.error("Erreur chargement ordres paiement:", error);
@@ -575,8 +628,6 @@ const ChargeSocialePage = () => {
             setLoading(true);
             setError(null);
 
-            const headers = getAuthHeaders();
-
             const params = new URLSearchParams({
                 page: pagination.page.toString(),
                 limit: pagination.limit.toString(),
@@ -592,27 +643,10 @@ const ChargeSocialePage = () => {
             if (dateFrom) params.append('dateFrom', dateFrom);
             if (dateTo) params.append('dateTo', dateTo);
 
-            const url = `${API_BASE_URL}/charges-sociales?${params.toString()}`;
+            const url = api(`charges-sociales?${params.toString()}`);
             console.log('🔍 URL appelée avec filtres:', url);
 
-            const response = await fetch(url, { headers });
-
-            if (response.status === 401) {
-                setError("Non authentifié. Veuillez vous connecter.");
-                toast({
-                    title: "Session expirée",
-                    description: "Veuillez vous reconnecter",
-                    variant: "destructive",
-                });
-                setLoading(false);
-                return;
-            }
-
-            if (!response.ok) {
-                throw new Error(`Erreur ${response.status}: ${response.statusText}`);
-            }
-
-            const data = await response.json();
+            const data = await fetchJson(url, {}, navigate);
             console.log('📥 Données API reçues:', data);
 
             if (data.success) {
@@ -769,35 +803,12 @@ const ChargeSocialePage = () => {
 
             console.log('Données envoyées:', requestData);
 
-            const response = await fetch(url, {
+            const responseData = await fetchJson(url, {
                 method,
-                headers: getAuthHeaders(),
                 body: JSON.stringify(requestData),
-            });
+            }, navigate);
 
-            const responseData = await response.json();
             console.log('Réponse serveur:', responseData);
-
-            if (!response.ok) {
-                if (response.status === 400 && responseData.errors) {
-                    const firstError = Object.entries(responseData.errors)[0];
-                    if (firstError) {
-                        const [field, message] = firstError;
-                        toast({
-                            title: "Erreur de validation",
-                            description: `${field}: ${message}`,
-                            variant: "destructive",
-                        });
-                    }
-                } else if (responseData.message) {
-                    toast({
-                        title: "Erreur",
-                        description: responseData.message,
-                        variant: "destructive",
-                    });
-                }
-                return;
-            }
 
             toast({
                 title: "Succès",
@@ -810,16 +821,29 @@ const ChargeSocialePage = () => {
 
             resetForm();
 
-        } catch (error) {
+        } catch (error: any) {
             console.error('Erreur soumission:', error);
-            const errorMessage = error instanceof Error ? error.message : "Erreur inconnue";
-            setError(errorMessage);
+            
+            if (error.status === 400 && error.data?.errors) {
+                const firstError = Object.entries(error.data.errors)[0];
+                if (firstError) {
+                    const [field, message] = firstError;
+                    toast({
+                        title: "Erreur de validation",
+                        description: `${field}: ${message}`,
+                        variant: "destructive",
+                    });
+                }
+            } else {
+                const errorMessage = error?.data?.message || error.message || "Erreur inconnue";
+                setError(errorMessage);
 
-            toast({
-                title: "Erreur",
-                description: "Une erreur est survenue lors de l'enregistrement",
-                variant: "destructive",
-            });
+                toast({
+                    title: "Erreur",
+                    description: errorMessage || "Une erreur est survenue lors de l'enregistrement",
+                    variant: "destructive",
+                });
+            }
         } finally {
             setSubmitting(false);
         }
@@ -882,16 +906,9 @@ const ChargeSocialePage = () => {
         }
 
         try {
-            const response = await fetch(`${API_BASE_URL}/charges-sociales/${id}`, {
+            const data = await fetchJson(api(`charges-sociales/${id}`), {
                 method: "DELETE",
-                headers: getAuthHeaders(),
-            });
-
-            const data = await response.json();
-
-            if (!response.ok) {
-                throw new Error(data.message || "Erreur lors de la suppression");
-            }
+            }, navigate);
 
             toast({
                 title: "Succès",
@@ -901,10 +918,10 @@ const ChargeSocialePage = () => {
             // Mettre à jour la liste localement
             setCharges(prev => prev.filter(c => c.id !== id));
 
-        } catch (error) {
+        } catch (error: any) {
             toast({
                 title: "Erreur",
-                description: "Erreur lors de la suppression",
+                description: error?.data?.message || error.message || "Erreur lors de la suppression",
                 variant: "destructive",
             });
         }
@@ -918,17 +935,10 @@ const ChargeSocialePage = () => {
                 requestData.dateDeclaration = new Date().toISOString().split('T')[0];
             }
 
-            const response = await fetch(`${API_BASE_URL}/charges-sociales/${id}/changer-statut`, {
+            const data = await fetchJson(api(`charges-sociales/${id}/changer-statut`), {
                 method: "POST",
-                headers: getAuthHeaders(),
                 body: JSON.stringify(requestData),
-            });
-
-            const data = await response.json();
-
-            if (!response.ok) {
-                throw new Error(data.message || "Erreur lors du changement de statut");
-            }
+            }, navigate);
 
             toast({
                 title: "Succès",
@@ -936,10 +946,10 @@ const ChargeSocialePage = () => {
             });
 
             fetchData();
-        } catch (error) {
+        } catch (error: any) {
             toast({
                 title: "Erreur",
-                description: error instanceof Error ? error.message : "Erreur lors du changement de statut",
+                description: error?.data?.message || error.message || "Erreur lors du changement de statut",
                 variant: "destructive",
             });
         }
@@ -947,16 +957,9 @@ const ChargeSocialePage = () => {
 
     const handleAssocierOrdre = async (chargeId: number, ordreId: number) => {
         try {
-            const response = await fetch(`${API_BASE_URL}/charges-sociales/${chargeId}/associer-ordre/${ordreId}`, {
+            const data = await fetchJson(api(`charges-sociales/${chargeId}/associer-ordre/${ordreId}`), {
                 method: "POST",
-                headers: getAuthHeaders(),
-            });
-
-            const data = await response.json();
-
-            if (!response.ok) {
-                throw new Error(data.message || "Erreur lors de l'association");
-            }
+            }, navigate);
 
             toast({
                 title: "Succès",
@@ -964,10 +967,10 @@ const ChargeSocialePage = () => {
             });
 
             fetchData();
-        } catch (error) {
+        } catch (error: any) {
             toast({
                 title: "Erreur",
-                description: "Erreur lors de l'association",
+                description: error?.data?.message || error.message || "Erreur lors de l'association",
                 variant: "destructive",
             });
         }
@@ -996,9 +999,8 @@ const ChargeSocialePage = () => {
 
     const handleExportCsv = async () => {
         try {
-            const response = await fetch(`${API_BASE_URL}/charges-sociales/export/csv`, {
-                headers: getAuthHeaders(),
-            });
+            const headers = getAuthHeaders();
+            const response = await fetch(api("charges-sociales/export/csv"), { headers });
 
             if (!response.ok) {
                 throw new Error("Erreur lors de l'export");
@@ -1029,11 +1031,7 @@ const ChargeSocialePage = () => {
 
     const handleAfficherStatistiques = async () => {
         try {
-            const response = await fetch(`${API_BASE_URL}/charges-sociales/statistiques`, {
-                headers: getAuthHeaders(),
-            });
-
-            const data = await response.json();
+            const data = await fetchJson(api("charges-sociales/statistiques"), {}, navigate);
 
             if (data.success) {
                 const stats = data.data;

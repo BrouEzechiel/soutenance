@@ -72,6 +72,58 @@ import { useToast } from "@/hooks/use-toast";
 const API_URL = "http://127.0.0.1:8000/api/parametres-bancaires";
 const COMPTES_URL = "http://127.0.0.1:8000/api/comptes-tresorerie";
 
+// Helper pour parser les réponses JSON de manière sécurisée
+const safeJson = async (res: Response) => {
+    try {
+        const txt = await res.text();
+        const trimmed = txt.trim();
+        if (trimmed.startsWith('<')) {
+            console.error('Expected JSON but received HTML:', trimmed.substring(0, 500));
+            return null;
+        }
+        return JSON.parse(trimmed);
+    } catch (e) {
+        console.error('Failed to parse JSON response', e);
+        return null;
+    }
+};
+
+// Wrapper fetch centralisé avec gestion de l'authentification et des erreurs 401
+const fetchJson = async (url: string, opts: RequestInit = {}, navigate?: any, toast?: any) => {
+    const token = localStorage.getItem('token') || localStorage.getItem('auth_token') || null;
+    const headers: Record<string, string> = { ...(opts.headers as Record<string, string> || {}) };
+    if (!headers['Content-Type'] && opts.body && typeof opts.body === 'string') {
+        headers['Content-Type'] = 'application/json';
+    }
+    if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+    }
+    const res = await fetch(url, { ...opts, headers });
+    // Gestion des erreurs 401 (token expiré/invalide)
+    if (res.status === 401) {
+        try {
+            localStorage.removeItem('token');
+            localStorage.removeItem('user');
+            localStorage.removeItem('isAuthenticated');
+        } catch (e) {
+            // ignore
+        }
+        if (toast) {
+            toast({
+                title: "Session expirée",
+                description: "Veuillez vous reconnecter",
+                variant: "destructive"
+            });
+        }
+        if (navigate) {
+            navigate('/login');
+        } else if (typeof window !== 'undefined' && window.location) {
+            window.location.href = '/login';
+        }
+    }
+    return res;
+};
+
 // Types alignés avec l'entité ParametreCompteBancaire
 type ParametreCompteBancaire = {
     id: number;
@@ -315,12 +367,7 @@ const ParametresBancaires = () => {
 
             console.log('Fetching URL:', url); // Pour debug
 
-            const res = await fetch(url, {
-                headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${token}`
-                }
-            });
+            const res = await fetchJson(url, {}, navigate, toast);
 
             console.log('Response status:', res.status); // Pour debug
 
@@ -385,9 +432,7 @@ const ParametresBancaires = () => {
 
         setLoadingComptes(true);
         try {
-            const res = await fetch(`${COMPTES_URL}/actifs`, {
-                headers: { Authorization: `Bearer ${token}` }
-            });
+            const res = await fetchJson(`${COMPTES_URL}/actifs`, {}, navigate, toast);
 
             if (res.status === 401) return handleUnauthorized();
             if (!res.ok) throw new Error(`Erreur ${res.status}`);
@@ -534,11 +579,10 @@ const ParametresBancaires = () => {
         }
 
         try {
-            const res = await fetch(url, {
+            const res = await fetchJson(url, {
                 method,
-                headers: authHeaders(),
                 body: JSON.stringify(payload)
-            });
+            }, navigate, toast);
 
             if (res.status === 401) return handleUnauthorized();
 
@@ -619,9 +663,7 @@ const ParametresBancaires = () => {
         setCalculating(true);
         try {
             const url = `${API_URL}/compte/${parametre.compteTresorerie.id}/calcul-frais?montantDecouvert=${montantDecouvert}&joursDecouvert=${joursDecouvert}`;
-            const res = await fetch(url, {
-                headers: { Authorization: `Bearer ${token}` }
-            });
+            const res = await fetchJson(url, {}, navigate, toast);
 
             if (res.status === 401) return handleUnauthorized();
             if (!res.ok) throw new Error(`Erreur ${res.status}`);
@@ -647,11 +689,10 @@ const ParametresBancaires = () => {
 
         try {
             const url = `${API_URL}/compte/${parametreToDuplicate.compteTresorerie.id}/duplicate`;
-            const res = await fetch(url, {
+            const res = await fetchJson(url, {
                 method: "POST",
-                headers: authHeaders(),
                 body: JSON.stringify({ targetCompteId: parseInt(targetCompteId) })
-            });
+            }, navigate, toast);
 
             if (res.status === 401) return handleUnauthorized();
 
@@ -693,10 +734,9 @@ const ParametresBancaires = () => {
         if (!parametreToDelete || !token) return;
 
         try {
-            const res = await fetch(`${API_URL}/${parametreToDelete.id}`, {
-                method: "DELETE",
-                headers: { Authorization: `Bearer ${token}` }
-            });
+            const res = await fetchJson(`${API_URL}/${parametreToDelete.id}`, {
+                method: "DELETE"
+            }, navigate, toast);
 
             if (res.status === 401) return handleUnauthorized();
 

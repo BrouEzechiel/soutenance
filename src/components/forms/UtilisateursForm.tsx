@@ -29,6 +29,7 @@ export const utilisateursFormSchema = z.object({
     motDePasseHashe: z.string()
         .min(6, "Le mot de passe doit contenir au moins 6 caractères")
         .or(z.literal("")),
+    ancienMotDePasse: z.string().optional(),
     role: z.string().min(1, "Le rôle est requis"),
     statut: z.string().min(1, "Le statut est requis"),
     societe: z.string().optional(),
@@ -56,6 +57,7 @@ export function UtilisateursForm({
     const user = JSON.parse(localStorage.getItem("user") || "{}");
     const roles: string[] = user.roles || [];
     const isSuperAdmin = roles.includes("ROLE_SUPER_ADMIN");
+    const isAdmin = roles.includes("ROLE_ADMINISTRATEUR") || isSuperAdmin;
 
     const [societes, setSocietes] = useState<SocieteDTO[]>([]);
     const [rolesBDD, setRolesBDD] = useState<RoleDTO[]>([]);
@@ -240,6 +242,27 @@ export function UtilisateursForm({
                             </FormItem>
                         )}
                     />
+
+                    {submitLabel === "Modifier" && isAdmin ? (
+                        <FormField
+                            control={form.control}
+                            name="ancienMotDePasse"
+                            render={({ field }) => (
+                                <FormItem>
+                                    <FormLabel>Ancien mot de passe de l'utilisateur</FormLabel>
+                                    <FormControl>
+                                        <Input type="password" placeholder="Ancien mot de passe" {...field} />
+                                    </FormControl>
+                                    <FormMessage />
+                                </FormItem>
+                            )}
+                        />
+                    ) : (
+                        <div />
+                    )}
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-1 gap-4">
                     <FormField
                         control={form.control}
                         name="motDePasseHashe"

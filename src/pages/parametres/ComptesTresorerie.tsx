@@ -8,7 +8,19 @@ import { Textarea } from "@/components/ui/textarea";
 import { Save, Plus, Loader2, AlertCircle, RefreshCw } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import MainLayout from "@/components/layout/MainLayout";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+
+// Allow access to Vite env in this file
+declare global {
+    interface ImportMetaEnv {
+        VITE_API_BASE_URL?: string;
+    }
+    interface ImportMeta {
+        readonly env: ImportMetaEnv;
+    }
+}
 
 // Types alignés avec l'entité CompteTresorerie
 interface PlanComptable {
@@ -88,6 +100,39 @@ const getAuthHeaders = (contentType: string | null = 'application/json'): Header
     return headers;
 };
 
+const API_BASE = (import.meta.env as any).VITE_API_BASE_URL ?? API_BASE_URL;
+const api = (path: string) => `${API_BASE}/${path.replace(/^\//, '')}`;
+
+async function safeJson(res: Response) {
+    const ct = res.headers.get('content-type') || '';
+    if (ct.includes('application/json')) return res.json();
+    const text = await res.text();
+    try { return JSON.parse(text); } catch { return text; }
+}
+
+async function fetchJson(url: string, options: RequestInit = {}, navigate?: any) {
+    const headers = { ...getAuthHeaders(), ...(options.headers || {}) } as HeadersInit;
+    const resp = await fetch(url, { ...options, headers });
+    const data = await safeJson(resp);
+    if (resp.status === 401) {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        localStorage.setItem('isAuthenticated', 'false');
+        if (navigate) navigate('/login');
+        const err: any = new Error('Unauthorized');
+        err.status = 401;
+        err.data = data;
+        throw err;
+    }
+    if (!resp.ok) {
+        const err: any = new Error('Request error');
+        err.status = resp.status;
+        err.data = data;
+        throw err;
+    }
+    return data;
+}
+
 // Données de démonstration
 const DEMO_PLAN_COMPTABLES: PlanComptable[] = [
     { id: 1, codeCompte: "512", intitule: "Banques", typeCompte: "BANQUE", statut: "ACTIF", codeFormate: "512" },
@@ -123,6 +168,7 @@ const TYPES_COMPTE = {
 
 const ComptesTresorerie = () => {
     const { toast } = useToast();
+    const navigate = useNavigate();
     const [compte, setCompte] = useState<CompteTresorerie>({
         intitule: '',
         typeCompte: 'courant',
@@ -146,6 +192,7 @@ const ComptesTresorerie = () => {
     const [banques, setBanques] = useState<Banque[]>([]);
     const [journauxTresorerie, setJournauxTresorerie] = useState<JournalTresorerie[]>([]);
     const [utilisateurs, setUtilisateurs] = useState<Utilisateur[]>([]);
+    const [defaultDeviseId, setDefaultDeviseId] = useState<number | null>(null);
     const [loading, setLoading] = useState<boolean>(true);
     const [submitting, setSubmitting] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
@@ -157,6 +204,12 @@ const ComptesTresorerie = () => {
     }, []);
 
     const fetchData = async () => {
+        // Local holders for fetched data to compute defaults synchronously
+        let fetchedPlanComptables: PlanComptable[] = [];
+        let fetchedBanques: Banque[] = [];
+        let fetchedJournaux: JournalTresorerie[] = [];
+        let fetchedUtilisateurs: Utilisateur[] = [];
+
         try {
             setLoading(true);
             setError(null);
@@ -181,46 +234,35 @@ const ComptesTresorerie = () => {
             }
 
             setDebugInfo(`Token trouvé: ${token.substring(0, 20)}...`);
-            const headers = getAuthHeaders();
 
             // 1. Charger les plans comptables ACTIFS
             try {
-                const planComptableResponse = await fetch(`${API_BASE_URL}/plan-comptables/actifs`, { headers });
-                if (planComptableResponse.ok) {
-                    const planComptableData = await planComptableResponse.json();
-                    const dataArray = planComptableData.data || [];
-                    setPlanComptables(dataArray as PlanComptable[]);
-                    setDebugInfo('Plan comptables chargés');
-                } else {
-                    // Essayer sans le chemin /actifs
-                    const planComptableResponse2 = await fetch(`${API_BASE_URL}/plan-comptables`, { headers });
-                    if (planComptableResponse2.ok) {
-                        const planComptableData2 = await planComptableResponse2.json();
-                        const dataArray = planComptableData2.data || [];
-                        const filteredData = dataArray.filter((p: any) => !p.statut || p.statut === 'ACTIF');
-                        setPlanComptables(filteredData as PlanComptable[]);
-                    } else {
-                        setDebugInfo('Échec chargement plan comptables, utilisation démo');
-                        setPlanComptables(DEMO_PLAN_COMPTABLES);
-                    }
+                const planComptableData = await fetchJson(api('/plan-comptables/actifs'), {}, navigate);
+                const dataArray = planComptableData?.data || planComptableData || [];
+                fetchedPlanComptables = dataArray as PlanComptable[];
+                setPlanComptables(fetchedPlanComptables);
+                setDebugInfo('Plan comptables chargés');
+            } catch (err) {
+                try {
+                    const planComptableData2 = await fetchJson(api('/plan-comptables'), {}, navigate);
+                    const dataArray = planComptableData2?.data || planComptableData2 || [];
+                    const filteredData = dataArray.filter((p: any) => !p.statut || p.statut === 'ACTIF');
+                    setPlanComptables(filteredData as PlanComptable[]);
+                } catch (e) {
+                    console.error('Erreur chargement plan comptable:', e);
+                    setDebugInfo('Échec chargement plan comptables, utilisation démo');
+                    setPlanComptables(DEMO_PLAN_COMPTABLES);
                 }
-            } catch (error) {
-                console.error('Erreur chargement plan comptable:', error);
-                setPlanComptables(DEMO_PLAN_COMPTABLES);
             }
 
             // 2. Charger les banques ACTIVES
             try {
-                const banqueResponse = await fetch(`${API_BASE_URL}/banques`, { headers });
-                if (banqueResponse.ok) {
-                    const banqueData = await banqueResponse.json();
-                    const banquesArray = banqueData.data || [];
-                    const activeBanques = banquesArray.filter((b: any) => !b.statut || b.statut === 'ACTIF');
-                    setBanques(activeBanques as Banque[]);
-                    setDebugInfo('Banques chargées');
-                } else {
-                    setBanques(DEMO_BANQUES);
-                }
+                const banqueData = await fetchJson(api('/banques'), {}, navigate);
+                const banquesArray = banqueData?.data || banqueData || [];
+                const activeBanques = banquesArray.filter((b: any) => !b.statut || b.statut === 'ACTIF');
+                fetchedBanques = activeBanques as Banque[];
+                setBanques(fetchedBanques);
+                setDebugInfo('Banques chargées');
             } catch (error) {
                 console.error('Erreur chargement banques:', error);
                 setBanques(DEMO_BANQUES);
@@ -228,155 +270,88 @@ const ComptesTresorerie = () => {
 
             // 3. Charger les journaux de trésorerie
             try {
-                const journalResponse = await fetch(`${API_BASE_URL}/journaux-tresorerie`, { headers });
-                if (journalResponse.ok) {
-                    const journalData = await journalResponse.json();
-                    console.log('Journaux reçus:', journalData);
-
-                    let journauxArray: any[] = [];
-                    if (journalData.data && Array.isArray(journalData.data)) {
-                        journauxArray = journalData.data;
-                    } else if (Array.isArray(journalData)) {
-                        journauxArray = journalData;
-                    }
-
-                    const activeJournaux = journauxArray.filter((j: any) =>
-                        !j.statut || j.statut === 'ACTIF' || j.statut === 'actif'
-                    );
-
-                    setJournauxTresorerie(activeJournaux as JournalTresorerie[]);
-                    setDebugInfo(`Journaux chargés: ${activeJournaux.length}`);
-                } else {
-                    console.warn('Réponse journaux non OK:', journalResponse.status);
-                    setJournauxTresorerie(DEMO_JOURNAUX_TRESORERIE);
-                }
+                const journalData = await fetchJson(api('/journaux-tresorerie'), {}, navigate);
+                const journauxArray = journalData?.data || journalData || [];
+                fetchedJournaux = journauxArray as JournalTresorerie[];
+                setJournauxTresorerie(fetchedJournaux);
+                setDebugInfo(`Journaux chargés: ${journauxArray.length}`);
             } catch (error) {
                 console.error('Erreur chargement journaux:', error);
                 setJournauxTresorerie(DEMO_JOURNAUX_TRESORERIE);
             }
 
-            // 4. Charger les utilisateurs - CORRECTION AMÉLIORÉE
+            // 4. Charger les utilisateurs
             try {
-                const utilisateurResponse = await fetch(`${API_BASE_URL}/utilisateurs/list`, { headers });
+                const utilisateurData = await fetchJson(api('/utilisateurs/list'), {}, navigate);
+                const utilisateursArray = utilisateurData?.data || utilisateurData || [];
 
-                console.log('Réponse utilisateurs status:', utilisateurResponse.status);
+                console.log('Données utilisateurs brutes:', utilisateursArray);
 
-                if (utilisateurResponse.ok) {
-                    const utilisateurData = await utilisateurResponse.json();
-                    console.log('Données utilisateurs reçues (brutes):', utilisateurData);
+                // Normaliser tous les utilisateurs sans filtre trop strict
+                const normalizedUtilisateurs = utilisateursArray.map((u: any) => ({
+                    id: u.id,
+                    username: u.username || u.userName || u.email || 'Utilisateur',
+                    firstName: u.firstName || u.first_name || u.prenom || '',
+                    lastName: u.lastName || u.last_name || u.nom || '',
+                    fullName: u.fullName || u.full_name || (u.firstName && u.lastName ? `${u.firstName} ${u.lastName}` : u.username),
+                    email: u.email || '',
+                    statut: u.statut || 'ACTIF'
+                }));
 
-                    let utilisateursArray: any[] = [];
-
-                    // Essayer différentes structures de réponse
-                    if (Array.isArray(utilisateurData)) {
-                        // Cas 1: Tableau direct
-                        utilisateursArray = utilisateurData;
-                        console.log('Cas 1: Tableau direct détecté');
-                    } else if (utilisateurData && typeof utilisateurData === 'object') {
-                        // Cas 2: Objet avec clé 'data'
-                        if (utilisateurData.data && Array.isArray(utilisateurData.data)) {
-                            utilisateursArray = utilisateurData.data;
-                            console.log('Cas 2: Objet avec clé "data" détecté');
-                        }
-                        // Cas 3: Objet avec clé 'utilisateurs'
-                        else if (utilisateurData.utilisateurs && Array.isArray(utilisateurData.utilisateurs)) {
-                            utilisateursArray = utilisateurData.utilisateurs;
-                            console.log('Cas 3: Objet avec clé "utilisateurs" détecté');
-                        }
-                        // Cas 4: Autre structure
-                        else {
-                            console.log('Cas 4: Autre structure, conversion en tableau');
-                            utilisateursArray = [utilisateurData];
-                        }
-                    }
-
-                    console.log('Utilisateurs après parsing:', utilisateursArray);
-
-                    if (utilisateursArray.length > 0) {
-                        // Filtrer les utilisateurs actifs
-                        const activeUtilisateurs = utilisateursArray.filter((u: any) => {
-                            const statut = u.statut?.toString().toUpperCase();
-                            const isActive = !statut ||
-                                statut === 'ACTIF' ||
-                                statut === 'ACTIVE' ||
-                                u.estActif === true ||
-                                u.isActive === true ||
-                                u.active === true;
-                            return isActive;
-                        });
-
-                        console.log('Utilisateurs actifs filtrés:', activeUtilisateurs);
-
-                        // Normaliser les données
-                        const normalizedUtilisateurs = activeUtilisateurs.map((u: any) => ({
-                            id: u.id,
-                            username: u.username || u.userName || u.email || 'Utilisateur',
-                            firstName: u.firstName || u.first_name || u.prenom || '',
-                            lastName: u.lastName || u.last_name || u.nom || '',
-                            fullName: u.fullName || u.full_name ||
-                                (u.firstName && u.lastName ? `${u.firstName} ${u.lastName}` : u.username),
-                            email: u.email || '',
-                            statut: u.statut || 'ACTIF'
-                        }));
-
-                        if (normalizedUtilisateurs.length > 0) {
-                            setUtilisateurs(normalizedUtilisateurs as Utilisateur[]);
-                            setDebugInfo(`Utilisateurs chargés: ${normalizedUtilisateurs.length}`);
-                        } else {
-                            console.warn('Aucun utilisateur actif trouvé après normalisation');
-                            setUtilisateurs(DEMO_UTILISATEURS);
-                        }
-                    } else {
-                        console.warn('Aucun utilisateur trouvé dans la réponse');
-                        setUtilisateurs(DEMO_UTILISATEURS);
-                    }
-
-                } else if (utilisateurResponse.status === 403) {
-                    console.warn('Permission refusée pour /utilisateurs/list (403)');
-
-                    // Essayer d'obtenir l'utilisateur courant
-                    try {
-                        const currentUserResponse = await fetch(`${API_BASE_URL}/me`, { headers });
-                        if (currentUserResponse.ok) {
-                            const currentUser = await currentUserResponse.json();
-                            console.log('Utilisateur courant:', currentUser);
-
-                            const normalizedUser = {
-                                id: currentUser.id,
-                                username: currentUser.username || currentUser.email,
-                                firstName: currentUser.firstName || currentUser.prenom || '',
-                                lastName: currentUser.lastName || currentUser.nom || '',
-                                fullName: currentUser.fullName ||
-                                    (currentUser.firstName && currentUser.lastName ?
-                                        `${currentUser.firstName} ${currentUser.lastName}` :
-                                        currentUser.username),
-                                email: currentUser.email || '',
-                                statut: currentUser.statut || 'ACTIF'
-                            };
-
-                            setUtilisateurs([normalizedUser] as Utilisateur[]);
-                            setDebugInfo('Utilisateur courant chargé');
-                        } else {
-                            console.warn('Impossible de récupérer l\'utilisateur courant');
-                            setUtilisateurs(DEMO_UTILISATEURS);
-                        }
-                    } catch (userError) {
-                        console.error('Erreur récupération utilisateur courant:', userError);
-                        setUtilisateurs(DEMO_UTILISATEURS);
-                    }
+                if (normalizedUtilisateurs.length > 0) {
+                    fetchedUtilisateurs = normalizedUtilisateurs as Utilisateur[];
+                    setUtilisateurs(fetchedUtilisateurs);
+                    setDebugInfo(`Utilisateurs chargés: ${fetchedUtilisateurs.length}`);
+                    console.log('Utilisateurs normalisés:', fetchedUtilisateurs);
                 } else {
-                    console.warn('Réponse utilisateurs non OK:', utilisateurResponse.status);
-                    setUtilisateurs(DEMO_UTILISATEURS);
+                    console.warn('Aucun utilisateur trouvé dans la réponse API');
+                    // Ne pas écraser avec DEMO ici, laisser vide
                 }
             } catch (error) {
-                console.error('Erreur détaillée chargement utilisateurs:', error);
-                setUtilisateurs(DEMO_UTILISATEURS);
+                console.warn('Erreur récupération utilisateurs, tentative /me', error);
+                try {
+                    const currentUser = await fetchJson(api('/me'), {}, navigate);
+                    const normalizedUser = {
+                        id: currentUser.id,
+                        username: currentUser.username || currentUser.email,
+                        firstName: currentUser.firstName || currentUser.prenom || '',
+                        lastName: currentUser.lastName || currentUser.nom || '',
+                        fullName: currentUser.fullName || (currentUser.firstName && currentUser.lastName ? `${currentUser.firstName} ${currentUser.lastName}` : currentUser.username),
+                        email: currentUser.email || '',
+                        statut: currentUser.statut || 'ACTIF'
+                    };
+                    fetchedUtilisateurs = [normalizedUser] as Utilisateur[];
+                    setUtilisateurs(fetchedUtilisateurs);
+                    setDebugInfo('Utilisateur courant chargé');
+                } catch (userError) {
+                    console.error('Erreur récupération utilisateur courant:', userError);
+                    // Ne pas écraser avec DEMO ici non plus
+                }
             }
 
-            // Définir les valeurs par défaut
-            const currentPlanComptables = planComptables.length > 0 ? planComptables : DEMO_PLAN_COMPTABLES;
-            const currentJournaux = journauxTresorerie.length > 0 ? journauxTresorerie : DEMO_JOURNAUX_TRESORERIE;
-            const currentUtilisateurs = utilisateurs.length > 0 ? utilisateurs : DEMO_UTILISATEURS;
+
+            // 5. Charger la société courante pour obtenir la devise par défaut
+            try {
+                const societeData = await fetchJson(api('/societes'), {}, navigate);
+                const societe = Array.isArray(societeData?.data) ? societeData.data[0] : (Array.isArray(societeData) ? societeData[0] : null);
+                if (societe && societe.deviseParDefaut && societe.deviseParDefaut.id) {
+                    setDefaultDeviseId(societe.deviseParDefaut.id as number);
+                    setDebugInfo('Devise par défaut de la société chargée');
+                } else {
+                    setDefaultDeviseId(null);
+                    console.warn('Devise par défaut introuvable pour la société');
+                }
+            } catch (err) {
+                console.error('Erreur récupération société:', err);
+                setDefaultDeviseId(null);
+            }
+            // Définir les valeurs par défaut (utiliser uniquement les plans comptables de classe 5)
+            const currentPlanComptables = (fetchedPlanComptables.length > 0 ? fetchedPlanComptables : (planComptables.length > 0 ? planComptables : DEMO_PLAN_COMPTABLES)).filter((pc) => {
+                const code = (pc.codeFormate || pc.codeCompte || '').toString().trim();
+                return code.length > 0 && /^5/.test(code);
+            });
+            const currentJournaux = (fetchedJournaux.length > 0 ? fetchedJournaux : (journauxTresorerie.length > 0 ? journauxTresorerie : DEMO_JOURNAUX_TRESORERIE));
+            const currentUtilisateurs = (fetchedUtilisateurs.length > 0 ? fetchedUtilisateurs : (utilisateurs.length > 0 ? utilisateurs : DEMO_UTILISATEURS));
 
             // S'assurer que les IDs par défaut sont valides
             const defaultPlanComptableId = currentPlanComptables[0]?.id || 0;
@@ -398,11 +373,21 @@ const ComptesTresorerie = () => {
             setError(errorMessage);
             setDebugInfo(`Erreur: ${errorMessage}`);
 
+            // Only fall back to demo data for datasets that were not successfully fetched
             setUseDemoData(true);
-            setPlanComptables(DEMO_PLAN_COMPTABLES);
-            setBanques(DEMO_BANQUES);
-            setJournauxTresorerie(DEMO_JOURNAUX_TRESORERIE);
-            setUtilisateurs(DEMO_UTILISATEURS);
+
+            if (fetchedPlanComptables.length === 0) {
+                setPlanComptables(DEMO_PLAN_COMPTABLES);
+            }
+            if (fetchedBanques.length === 0) {
+                setBanques(DEMO_BANQUES);
+            }
+            if (fetchedJournaux.length === 0) {
+                setJournauxTresorerie(DEMO_JOURNAUX_TRESORERIE);
+            }
+            if (fetchedUtilisateurs.length === 0) {
+                setUtilisateurs(DEMO_UTILISATEURS);
+            }
 
             toast({
                 title: "Mode démonstration activé",
@@ -473,6 +458,33 @@ const ComptesTresorerie = () => {
         return errors;
     };
 
+    // Générer les écritures comptables pour un compte de trésorerie donné
+    async function generateEcritures(compteId: number) {
+        try {
+            const data = await fetchJson(api(`/comptes-tresorerie/${compteId}/generer-ecritures`), { method: 'POST' }, navigate);
+            toast({
+                title: 'Écritures générées',
+                description: data?.message || 'Les écritures comptables ont été générées avec succès.'
+            });
+        } catch (err: any) {
+            console.error('Erreur génération écritures:', err);
+            if (err?.status === 404) {
+                toast({
+                    title: 'Génération non disponible',
+                    description: 'Le backend ne propose pas la génération automatique d\'écritures pour le moment.',
+                    variant: 'default'
+                });
+                return;
+            }
+            const message = err?.data?.message || err?.message || 'Impossible de générer les écritures';
+            toast({
+                title: 'Erreur génération écritures',
+                description: message,
+                variant: 'destructive'
+            });
+        }
+    }
+
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
 
@@ -489,6 +501,12 @@ const ComptesTresorerie = () => {
                     description: "Le compte de trésorerie a été créé avec succès (mode démonstration)",
                 });
 
+                // Simuler génération des écritures en mode démo
+                toast({
+                    title: 'Écritures (démo)',
+                    description: 'Les écritures comptables ont été simulées (mode démo).'
+                });
+
                 resetForm();
             }, 1000);
 
@@ -496,6 +514,9 @@ const ComptesTresorerie = () => {
         }
 
         const validationErrors = validateForm();
+        if (!defaultDeviseId) {
+            validationErrors.push("La devise de la société est introuvable. Veuillez vérifier la configuration.");
+        }
         if (validationErrors.length > 0) {
             validationErrors.forEach(error => {
                 toast({
@@ -522,7 +543,8 @@ const ComptesTresorerie = () => {
                 numeroCompte: compte.numeroCompte.trim(),
                 bic: compte.bic?.trim() || null,
                 banqueId: compte.banqueId || null,
-                planComptableId: compte.planComptableId,
+                compteComptableId: compte.planComptableId,
+                deviseId: defaultDeviseId,
                 journalTresorerieId: compte.journalTresorerieId,
                 gestionnaireId: compte.gestionnaireId,
                 superieurHierarchiqueId: compte.superieurHierarchiqueId || null,
@@ -536,51 +558,47 @@ const ComptesTresorerie = () => {
             };
 
             console.log('Envoi des données à l\'API:', compteData);
-
-            const response = await fetch(`${API_BASE_URL}/comptes-tresorerie`, {
-                method: 'POST',
-                headers: getAuthHeaders(),
-                body: JSON.stringify(compteData),
-            });
-
-            const responseText = await response.text();
-            let responseData;
+            let responseData: any = {};
             try {
-                responseData = responseText ? JSON.parse(responseText) : {};
-            } catch (e) {
-                console.error('Erreur parsing JSON:', e);
-                responseData = {};
-            }
-
-            console.log('Réponse API:', response.status, responseData);
-
-            if (!response.ok) {
-                if (response.status === 401) {
+                responseData = await fetchJson(api('/comptes-tresorerie'), { method: 'POST', body: JSON.stringify(compteData) }, navigate);
+            } catch (err: any) {
+                if (err?.status === 401) {
                     throw new Error('Session expirée. Veuillez vous reconnecter.');
                 }
-
-                if (response.status === 400) {
-                    if (responseData.errors) {
-                        Object.entries(responseData.errors).forEach(([field, message]) => {
-                            toast({
-                                title: "Erreur de validation",
-                                description: `${field}: ${message}`,
-                                variant: "destructive"
-                            });
+                if (err?.status === 400 && err?.data?.errors) {
+                    Object.entries(err.data.errors).forEach(([field, message]) => {
+                        toast({
+                            title: "Erreur de validation",
+                            description: `${field}: ${message}`,
+                            variant: "destructive"
                         });
-                    } else if (responseData.error) {
-                        throw new Error(responseData.error);
-                    }
-                } else {
-                    throw new Error(`Erreur ${response.status}: ${response.statusText}`);
+                    });
+                    return;
                 }
-                return;
+                if (err?.data?.error) {
+                    throw new Error(err.data.error);
+                }
+                throw err;
             }
 
             toast({
                 title: "Succès",
                 description: responseData.message || "Le compte de trésorerie a été créé avec succès."
             });
+
+            // Tenter d'obtenir l'ID créé depuis la réponse pour générer les écritures
+            const createdId = responseData?.data?.id || responseData?.id || responseData?.compte?.id || null;
+
+            if (createdId) {
+                await generateEcritures(createdId);
+            } else {
+                // Si l'API ne renvoie pas l'ID, avertir l'utilisateur
+                toast({
+                    title: 'Info',
+                    description: 'Le compte a été créé mais l\'ID n\'a pas été retourné par l\'API : génération automatique non vérifiée.',
+                    variant: 'default'
+                });
+            }
 
             resetForm();
 
@@ -600,7 +618,10 @@ const ComptesTresorerie = () => {
     };
 
     const resetForm = () => {
-        const currentPlanComptables = planComptables.length > 0 ? planComptables : DEMO_PLAN_COMPTABLES;
+        const currentPlanComptables = (planComptables.length > 0 ? planComptables : DEMO_PLAN_COMPTABLES).filter((pc) => {
+            const code = (pc.codeFormate || pc.codeCompte || '').toString().trim();
+            return code.length > 0 && /^5/.test(code);
+        });
         const currentJournaux = journauxTresorerie.length > 0 ? journauxTresorerie : DEMO_JOURNAUX_TRESORERIE;
         const currentUtilisateurs = utilisateurs.length > 0 ? utilisateurs : DEMO_UTILISATEURS;
 
@@ -643,475 +664,487 @@ const ComptesTresorerie = () => {
         return `${code} - ${pc.intitule}`;
     };
 
+    // Filtrer les plans comptables pour ne garder que la classe 5 (comptes financiers)
+    const isClasse5 = (pc: PlanComptable) => {
+        const code = (pc.codeFormate || pc.codeCompte || '').toString().trim();
+        return code.length > 0 && /^5/.test(code);
+    };
+
+    const filteredPlanComptables = (planComptables.length > 0 ? planComptables : DEMO_PLAN_COMPTABLES).filter(isClasse5);
+
     if (loading) {
         return (
-            <div className="flex items-center justify-center min-h-screen">
-                <div className="flex flex-col items-center gap-4">
-                    <Loader2 className="w-8 h-8 animate-spin text-primary" />
-                    <p className="text-muted-foreground">Chargement des données...</p>
-                    {debugInfo && <p className="text-xs text-muted-foreground">{debugInfo}</p>}
+            <MainLayout>
+                <div className="flex items-center justify-center min-h-screen">
+                    <div className="flex flex-col items-center gap-4">
+                        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                        <p className="text-muted-foreground">Chargement des données...</p>
+                        {debugInfo && <p className="text-xs text-muted-foreground">{debugInfo}</p>}
+                    </div>
                 </div>
-            </div>
+            </MainLayout>
         );
     }
 
     return (
-        <div className="space-y-6 p-6">
-            <div className="flex justify-between items-center">
-                <div>
-                    <h1 className="text-3xl font-bold text-foreground">Comptes de Trésorerie</h1>
-                    <p className="text-muted-foreground">Configuration des comptes de trésorerie</p>
+        <MainLayout>
+            <div className="space-y-6 p-6">
+                <div className="flex justify-between items-center">
+                    <div>
+                        <h1 className="text-3xl font-bold text-foreground">Comptes de Trésorerie</h1>
+                        <p className="text-muted-foreground">Configuration des comptes de trésorerie</p>
+                    </div>
+                    <div className="flex gap-2">
+                        <Button
+                            variant="outline"
+                            onClick={handleRefresh}
+                            className="gap-2"
+                            disabled={submitting || loading}
+                        >
+                            <RefreshCw className="w-4 h-4" />
+                            Actualiser
+                        </Button>
+                        <Button
+                            className="gap-2"
+                            onClick={resetForm}
+                            disabled={submitting}
+                        >
+                            <Plus className="w-4 h-4" />
+                            Nouveau compte
+                        </Button>
+                    </div>
                 </div>
-                <div className="flex gap-2">
-                    <Button
-                        variant="outline"
-                        onClick={handleRefresh}
-                        className="gap-2"
-                        disabled={submitting || loading}
-                    >
-                        <RefreshCw className="w-4 h-4" />
-                        Actualiser
-                    </Button>
-                    <Button
-                        className="gap-2"
-                        onClick={resetForm}
-                        disabled={submitting}
-                    >
-                        <Plus className="w-4 h-4" />
-                        Nouveau compte
-                    </Button>
-                </div>
-            </div>
 
-            {useDemoData && (
-                <Alert className="bg-yellow-50 border-yellow-200">
-                    <AlertCircle className="h-4 w-4 text-yellow-600" />
-                    <AlertDescription className="text-yellow-800">
-                        Mode démonstration activé. Les données affichées sont des données de test.
-                        {debugInfo && <span className="block text-xs mt-1">{debugInfo}</span>}
-                    </AlertDescription>
-                </Alert>
-            )}
+                {useDemoData && (
+                    <Alert className="bg-yellow-50 border-yellow-200">
+                        <AlertCircle className="h-4 w-4 text-yellow-600" />
+                        <AlertDescription className="text-yellow-800">
+                            Mode démonstration activé. Les données affichées sont des données de test.
+                            {debugInfo && <span className="block text-xs mt-1">{debugInfo}</span>}
+                        </AlertDescription>
+                    </Alert>
+                )}
 
-            {error && (
-                <Alert variant="destructive">
-                    <AlertCircle className="h-4 w-4" />
-                    <AlertDescription>{error}</AlertDescription>
-                </Alert>
-            )}
+                {error && (
+                    <Alert variant="destructive">
+                        <AlertCircle className="h-4 w-4" />
+                        <AlertDescription>{error}</AlertDescription>
+                    </Alert>
+                )}
 
-            <form onSubmit={handleSubmit}>
-                <Card>
-                    <CardHeader>
-                        <CardTitle>
-                            {useDemoData ? 'Créer un compte de trésorerie (Mode démo)' : 'Créer un nouveau compte de trésorerie'}
-                        </CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-6">
-                        <div className="space-y-4">
-                            <h3 className="text-lg font-semibold">Informations générales</h3>
-
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div className="space-y-2">
-                                    <Label htmlFor="intitule">
-                                        Nom descriptif <span className="text-red-500">*</span>
-                                    </Label>
-                                    <Input
-                                        id="intitule"
-                                        value={compte.intitule}
-                                        onChange={(e) => handleChange('intitule', e.target.value)}
-                                        placeholder="Ex: Compte courant principal Banque Populaire"
-                                        required
-                                        disabled={submitting}
-                                    />
-                                    <p className="text-sm text-muted-foreground">
-                                        Nom descriptif du compte
-                                    </p>
-                                </div>
-
-                                <div className="space-y-2">
-                                    <Label htmlFor="typeCompte">
-                                        Type de compte <span className="text-red-500">*</span>
-                                    </Label>
-                                    <Select
-                                        value={compte.typeCompte}
-                                        onValueChange={(value: CompteTresorerie['typeCompte']) =>
-                                            handleChange('typeCompte', value)
-                                        }
-                                        disabled={submitting}
-                                    >
-                                        <SelectTrigger>
-                                            <SelectValue placeholder="Sélectionner le type" />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            {Object.entries(TYPES_COMPTE).map(([key, label]) => (
-                                                <SelectItem key={key} value={key}>
-                                                    {label}
-                                                </SelectItem>
-                                            ))}
-                                        </SelectContent>
-                                    </Select>
-                                    <p className="text-sm text-muted-foreground">
-                                        Type de compte de trésorerie
-                                    </p>
-                                </div>
-                            </div>
-
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div className="space-y-2">
-                                    <Label htmlFor="numeroCompte">
-                                        IBAN <span className="text-red-500">*</span>
-                                    </Label>
-                                    <Input
-                                        id="numeroCompte"
-                                        value={compte.numeroCompte}
-                                        onChange={(e) => handleChange('numeroCompte', e.target.value)}
-                                        placeholder="Ex: IBAN ou numéro de compte bancaire"
-                                        required
-                                        disabled={submitting}
-                                    />
-                                    <p className="text-sm text-muted-foreground">
-                                        Numéro de compte (IBAN, RIB ou identifiant local)
-                                    </p>
-                                </div>
-
-                                <div className="space-y-2">
-                                    <Label htmlFor="bic">BIC/SWIFT (Optionnel)</Label>
-                                    <Input
-                                        id="bic"
-                                        value={compte.bic || ''}
-                                        onChange={(e) => handleChange('bic', e.target.value)}
-                                        placeholder="Ex: BCPAMAMC"
-                                        disabled={submitting || compte.typeCompte === 'autre'}
-                                    />
-                                    <p className="text-sm text-muted-foreground">
-                                        Code BIC/SWIFT de la banque
-                                    </p>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="space-y-4 border-t pt-4">
-                            <h3 className="text-lg font-semibold">Relations et affectations</h3>
-
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div className="space-y-2">
-                                    <Label htmlFor="planComptable">
-                                         Numéro du compte <span className="text-red-500">*</span>
-                                    </Label>
-                                    <Select
-                                        value={compte.planComptableId.toString()}
-                                        onValueChange={(value) => handleChange('planComptableId', parseInt(value))}
-                                        disabled={submitting || (planComptables.length === 0 && !useDemoData)}
-                                    >
-                                        <SelectTrigger>
-                                            <SelectValue placeholder="Sélectionner un compte comptable" />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            {(planComptables.length > 0 ? planComptables : DEMO_PLAN_COMPTABLES).map((pc) => (
-                                                <SelectItem key={pc.id} value={pc.id.toString()}>
-                                                    {getPlanComptableDisplayName(pc)}
-                                                </SelectItem>
-                                            ))}
-                                        </SelectContent>
-                                    </Select>
-                                    {planComptables.length === 0 && !useDemoData && (
-                                        <p className="text-sm text-destructive">
-                                            Aucun compte comptable actif disponible
-                                        </p>
-                                    )}
-                                </div>
-
-                                <div className="space-y-2">
-                                    <Label htmlFor="journalTresorerie">
-                                        Journal de trésorerie <span className="text-red-500">*</span>
-                                    </Label>
-                                    <Select
-                                        value={compte.journalTresorerieId.toString()}
-                                        onValueChange={(value) => handleChange('journalTresorerieId', parseInt(value))}
-                                        disabled={submitting || (journauxTresorerie.length === 0 && !useDemoData)}
-                                    >
-                                        <SelectTrigger>
-                                            <SelectValue placeholder="Sélectionner un journal" />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            {(journauxTresorerie.length > 0 ? journauxTresorerie : DEMO_JOURNAUX_TRESORERIE).map((journal) => (
-                                                <SelectItem key={journal.id} value={journal.id.toString()}>
-                                                    {journal.code} - {journal.intitule}
-                                                </SelectItem>
-                                            ))}
-                                        </SelectContent>
-                                    </Select>
-                                    {journauxTresorerie.length === 0 && !useDemoData && (
-                                        <p className="text-sm text-destructive">
-                                            Aucun journal de trésorerie disponible
-                                        </p>
-                                    )}
-                                </div>
-                            </div>
-
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div className="space-y-2">
-                                    <Label htmlFor="gestionnaire">
-                                        Gestionnaire <span className="text-red-500">*</span>
-                                    </Label>
-                                    <Select
-                                        value={compte.gestionnaireId.toString()}
-                                        onValueChange={(value) => handleChange('gestionnaireId', parseInt(value))}
-                                        disabled={submitting || (utilisateurs.length === 0 && !useDemoData)}
-                                    >
-                                        <SelectTrigger>
-                                            <SelectValue placeholder="Sélectionner un gestionnaire" />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            {(utilisateurs.length > 0 ? utilisateurs : DEMO_UTILISATEURS).map((user) => (
-                                                <SelectItem key={user.id} value={user.id.toString()}>
-                                                    {getUtilisateurDisplayName(user)}
-                                                </SelectItem>
-                                            ))}
-                                        </SelectContent>
-                                    </Select>
-                                    {utilisateurs.length === 0 && !useDemoData && (
-                                        <p className="text-sm text-destructive">
-                                            Aucun utilisateur disponible
-                                        </p>
-                                    )}
-                                </div>
-
-                                <div className="space-y-2">
-                                    <Label htmlFor="superieurHierarchique">Supérieur hiérarchique (Optionnel)</Label>
-                                    <Select
-                                        value={compte.superieurHierarchiqueId?.toString() || 'none'}
-                                        onValueChange={(value) => {
-                                            if (value === 'none') {
-                                                handleChange('superieurHierarchiqueId', undefined);
-                                            } else {
-                                                handleChange('superieurHierarchiqueId', parseInt(value));
-                                            }
-                                        }}
-                                        disabled={submitting || (utilisateurs.length === 0 && !useDemoData)}
-                                    >
-                                        <SelectTrigger>
-                                            <SelectValue placeholder="Sélectionner un supérieur hiérarchique" />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="none">Aucun</SelectItem>
-                                            {(utilisateurs.length > 0 ? utilisateurs : DEMO_UTILISATEURS).map((user) => (
-                                                <SelectItem key={user.id} value={user.id.toString()}>
-                                                    {getUtilisateurDisplayName(user)}
-                                                </SelectItem>
-                                            ))}
-                                        </SelectContent>
-                                    </Select>
-                                </div>
-                            </div>
-                        </div>
-
-                        {typesRequireBanque.includes(compte.typeCompte) && (
-                            <div className="space-y-4 border-t pt-4">
-                                <h3 className="text-lg font-semibold">Informations bancaires</h3>
+                <form onSubmit={handleSubmit}>
+                    <Card>
+                        <CardHeader>
+                            <CardTitle>
+                                {useDemoData ? 'Créer un compte de trésorerie (Mode démo)' : 'Créer un nouveau compte de trésorerie'}
+                            </CardTitle>
+                        </CardHeader>
+                        <CardContent className="space-y-6">
+                            <div className="space-y-4">
+                                <h3 className="text-lg font-semibold">Informations générales</h3>
 
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                     <div className="space-y-2">
-                                        <Label htmlFor="banque">
-                                            Banque <span className="text-red-500">*</span>
+                                        <Label htmlFor="intitule">
+                                            Nom descriptif <span className="text-red-500">*</span>
+                                        </Label>
+                                        <Input
+                                            id="intitule"
+                                            value={compte.intitule}
+                                            onChange={(e) => handleChange('intitule', e.target.value)}
+                                            placeholder="Ex: Compte courant principal Banque Populaire"
+                                            required
+                                            disabled={submitting}
+                                        />
+                                        <p className="text-sm text-muted-foreground">
+                                            Nom descriptif du compte
+                                        </p>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <Label htmlFor="typeCompte">
+                                            Type de compte <span className="text-red-500">*</span>
                                         </Label>
                                         <Select
-                                            value={compte.banqueId?.toString() || 'none'}
-                                            onValueChange={(value) => {
-                                                if (value === 'none') {
-                                                    handleChange('banqueId', undefined);
-                                                } else {
-                                                    handleChange('banqueId', parseInt(value));
-                                                }
-                                            }}
-                                            disabled={submitting || (banques.length === 0 && !useDemoData)}
+                                            value={compte.typeCompte}
+                                            onValueChange={(value: CompteTresorerie['typeCompte']) =>
+                                                handleChange('typeCompte', value)
+                                            }
+                                            disabled={submitting}
                                         >
                                             <SelectTrigger>
-                                                <SelectValue placeholder="Sélectionner une banque" />
+                                                <SelectValue placeholder="Sélectionner le type" />
                                             </SelectTrigger>
                                             <SelectContent>
-                                                <SelectItem value="none">Sélectionner une banque</SelectItem>
-                                                {(banques.length > 0 ? banques : DEMO_BANQUES).map((banque) => (
-                                                    <SelectItem key={banque.id} value={banque.id.toString()}>
-                                                        {banque.nom} ({banque.codeBanque})
+                                                {Object.entries(TYPES_COMPTE).map(([key, label]) => (
+                                                    <SelectItem key={key} value={key}>
+                                                        {label}
                                                     </SelectItem>
                                                 ))}
                                             </SelectContent>
                                         </Select>
-                                        {banques.length === 0 && !useDemoData && (
+                                        <p className="text-sm text-muted-foreground">
+                                            Type de compte de trésorerie
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div className="space-y-2">
+                                        <Label htmlFor="numeroCompte">
+                                            IBAN <span className="text-red-500">*</span>
+                                        </Label>
+                                        <Input
+                                            id="numeroCompte"
+                                            value={compte.numeroCompte}
+                                            onChange={(e) => handleChange('numeroCompte', e.target.value)}
+                                            placeholder="Ex: IBAN ou numéro de compte bancaire"
+                                            required
+                                            disabled={submitting}
+                                        />
+                                        <p className="text-sm text-muted-foreground">
+                                            Numéro de compte (IBAN, RIB ou identifiant local)
+                                        </p>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <Label htmlFor="bic">BIC/SWIFT (Optionnel)</Label>
+                                        <Input
+                                            id="bic"
+                                            value={compte.bic || ''}
+                                            onChange={(e) => handleChange('bic', e.target.value)}
+                                            placeholder="Ex: BCPAMAMC"
+                                            disabled={submitting || compte.typeCompte === 'autre'}
+                                        />
+                                        <p className="text-sm text-muted-foreground">
+                                            Code BIC/SWIFT de la banque
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="space-y-4 border-t pt-4">
+                                <h3 className="text-lg font-semibold">Relations et affectations</h3>
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div className="space-y-2">
+                                        <Label htmlFor="planComptable">
+                                            Compte Comptable <span className="text-red-500">*</span>
+                                        </Label>
+                                        <Select
+                                            value={compte.planComptableId.toString()}
+                                            onValueChange={(value) => handleChange('planComptableId', parseInt(value))}
+                                            disabled={submitting || (filteredPlanComptables.length === 0 && !useDemoData)}
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Sélectionner un compte comptable" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {filteredPlanComptables.map((pc) => (
+                                                    <SelectItem key={pc.id} value={pc.id.toString()}>
+                                                        {getPlanComptableDisplayName(pc)}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                        {filteredPlanComptables.length === 0 && !useDemoData && (
                                             <p className="text-sm text-destructive">
-                                                Aucune banque disponible
+                                                Aucun compte comptable actif disponible
                                             </p>
                                         )}
                                     </div>
 
                                     <div className="space-y-2">
-                                        <Label htmlFor="contactGestionnaire">Contact du gestionnaire (Optionnel)</Label>
+                                        <Label htmlFor="journalTresorerie">
+                                            Journal de trésorerie <span className="text-red-500">*</span>
+                                        </Label>
+                                        <Select
+                                            value={compte.journalTresorerieId.toString()}
+                                            onValueChange={(value) => handleChange('journalTresorerieId', parseInt(value))}
+                                            disabled={submitting || (journauxTresorerie.length === 0 && !useDemoData)}
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Sélectionner un journal" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {(journauxTresorerie.length > 0 ? journauxTresorerie : DEMO_JOURNAUX_TRESORERIE).map((journal) => (
+                                                    <SelectItem key={journal.id} value={journal.id.toString()}>
+                                                        {journal.code} - {journal.intitule}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                        {journauxTresorerie.length === 0 && !useDemoData && (
+                                            <p className="text-sm text-destructive">
+                                                Aucun journal de trésorerie disponible
+                                            </p>
+                                        )}
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div className="space-y-2">
+                                        <Label htmlFor="gestionnaire">
+                                            Gestionnaire <span className="text-red-500">*</span>
+                                        </Label>
+                                        <Select
+                                            value={compte.gestionnaireId.toString()}
+                                            onValueChange={(value) => handleChange('gestionnaireId', parseInt(value))}
+                                            disabled={submitting || (utilisateurs.length === 0 && !useDemoData)}
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Sélectionner un gestionnaire" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {(utilisateurs.length > 0 ? utilisateurs : DEMO_UTILISATEURS).map((user) => (
+                                                    <SelectItem key={user.id} value={user.id.toString()}>
+                                                        {getUtilisateurDisplayName(user)}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                        {utilisateurs.length === 0 && !useDemoData && (
+                                            <p className="text-sm text-destructive">
+                                                Aucun utilisateur disponible
+                                            </p>
+                                        )}
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <Label htmlFor="superieurHierarchique">Supérieur hiérarchique (Optionnel)</Label>
+                                        <Select
+                                            value={compte.superieurHierarchiqueId?.toString() || 'none'}
+                                            onValueChange={(value) => {
+                                                if (value === 'none') {
+                                                    handleChange('superieurHierarchiqueId', undefined);
+                                                } else {
+                                                    handleChange('superieurHierarchiqueId', parseInt(value));
+                                                }
+                                            }}
+                                            disabled={submitting || (utilisateurs.length === 0 && !useDemoData)}
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Sélectionner un supérieur hiérarchique" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="none">Aucun</SelectItem>
+                                                {(utilisateurs.length > 0 ? utilisateurs : DEMO_UTILISATEURS).map((user) => (
+                                                    <SelectItem key={user.id} value={user.id.toString()}>
+                                                        {getUtilisateurDisplayName(user)}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {typesRequireBanque.includes(compte.typeCompte) && (
+                                <div className="space-y-4 border-t pt-4">
+                                    <h3 className="text-lg font-semibold">Informations bancaires</h3>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div className="space-y-2">
+                                            <Label htmlFor="banque">
+                                                Banque <span className="text-red-500">*</span>
+                                            </Label>
+                                            <Select
+                                                value={compte.banqueId?.toString() || 'none'}
+                                                onValueChange={(value) => {
+                                                    if (value === 'none') {
+                                                        handleChange('banqueId', undefined);
+                                                    } else {
+                                                        handleChange('banqueId', parseInt(value));
+                                                    }
+                                                }}
+                                                disabled={submitting || (banques.length === 0 && !useDemoData)}
+                                            >
+                                                <SelectTrigger>
+                                                    <SelectValue placeholder="Sélectionner une banque" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="none">Sélectionner une banque</SelectItem>
+                                                    {(banques.length > 0 ? banques : DEMO_BANQUES).map((banque) => (
+                                                        <SelectItem key={banque.id} value={banque.id.toString()}>
+                                                            {banque.nom} ({banque.codeBanque})
+                                                        </SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                            {banques.length === 0 && !useDemoData && (
+                                                <p className="text-sm text-destructive">
+                                                    Aucune banque disponible
+                                                </p>
+                                            )}
+                                        </div>
+
+                                        <div className="space-y-2">
+                                            <Label htmlFor="contactGestionnaire">Contact du gestionnaire (Optionnel)</Label>
+                                            <Input
+                                                id="contactGestionnaire"
+                                                value={compte.contactGestionnaire || ''}
+                                                onChange={(e) => handleChange('contactGestionnaire', e.target.value)}
+                                                placeholder="Ex: Tél: 06-XX-XX-XX-XX"
+                                                disabled={submitting}
+                                            />
+                                            <p className="text-sm text-muted-foreground">
+                                                Contact du gestionnaire de compte
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            <div className="space-y-4 border-t pt-4">
+                                <h3 className="text-lg font-semibold">Soldes</h3>
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div className="space-y-2">
+                                        <Label htmlFor="soldeOuverture">
+                                            Solde d'ouverture <span className="text-red-500">*</span>
+                                        </Label>
                                         <Input
-                                            id="contactGestionnaire"
-                                            value={compte.contactGestionnaire || ''}
-                                            onChange={(e) => handleChange('contactGestionnaire', e.target.value)}
-                                            placeholder="Ex: Tél: 06-XX-XX-XX-XX"
+                                            id="soldeOuverture"
+                                            type="number"
+                                            step="0.01"
+                                            value={compte.soldeOuverture}
+                                            onChange={(e) => handleChange('soldeOuverture', e.target.value || '0.00')}
+                                            placeholder="0.00"
+                                            required
                                             disabled={submitting}
                                         />
                                         <p className="text-sm text-muted-foreground">
-                                            Contact du gestionnaire de compte
+                                            Solde initial du compte
                                         </p>
                                     </div>
-                                </div>
-                            </div>
-                        )}
 
-                        <div className="space-y-4 border-t pt-4">
-                            <h3 className="text-lg font-semibold">Soldes</h3>
-
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div className="space-y-2">
-                                    <Label htmlFor="soldeOuverture">
-                                        Solde d'ouverture <span className="text-red-500">*</span>
-                                    </Label>
-                                    <Input
-                                        id="soldeOuverture"
-                                        type="number"
-                                        step="0.01"
-                                        value={compte.soldeOuverture}
-                                        onChange={(e) => handleChange('soldeOuverture', e.target.value || '0.00')}
-                                        placeholder="0.00"
-                                        required
-                                        disabled={submitting}
-                                    />
-                                    <p className="text-sm text-muted-foreground">
-                                        Solde initial du compte
-                                    </p>
-                                </div>
-
-                                <div className="space-y-2">
-                                    <Label htmlFor="soldeActuel">Solde actuel</Label>
-                                    <Input
-                                        id="soldeActuel"
-                                        type="number"
-                                        step="0.01"
-                                        value={compte.soldeActuel}
-                                        readOnly
-                                        className="bg-muted"
-                                        disabled={submitting}
-                                    />
-                                    <p className="text-sm text-muted-foreground">
-                                        Égal au solde d'ouverture à la création
-                                    </p>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="space-y-4 border-t pt-4">
-                            <h3 className="text-lg font-semibold">Paramètres et informations supplémentaires</h3>
-
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <div className="flex items-center justify-between">
-                                    <div>
-                                        <Label htmlFor="estPrincipal">Compte principal</Label>
+                                    <div className="space-y-2">
+                                        <Label htmlFor="soldeActuel">Solde actuel</Label>
+                                        <Input
+                                            id="soldeActuel"
+                                            type="number"
+                                            step="0.01"
+                                            value={compte.soldeActuel}
+                                            readOnly
+                                            className="bg-muted"
+                                            disabled={submitting}
+                                        />
                                         <p className="text-sm text-muted-foreground">
-                                            Définir ce compte comme le compte principal de trésorerie
+                                            Égal au solde d'ouverture à la création
                                         </p>
                                     </div>
-                                    <Switch
-                                        id="estPrincipal"
-                                        checked={compte.estPrincipal}
-                                        onCheckedChange={(checked) => handleChange('estPrincipal', checked)}
-                                        disabled={submitting}
-                                    />
-                                </div>
-
-                                <div className="flex items-center justify-between">
-                                    <div>
-                                        <Label htmlFor="statut">Statut</Label>
-                                        <p className="text-sm text-muted-foreground">
-                                            Statut du compte
-                                        </p>
-                                    </div>
-                                    <Select
-                                        value={compte.statut}
-                                        onValueChange={(value: CompteTresorerie['statut']) =>
-                                            handleChange('statut', value)
-                                        }
-                                        disabled={submitting}
-                                    >
-                                        <SelectTrigger className="w-[180px]">
-                                            <SelectValue placeholder="Statut" />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="ACTIF">Actif</SelectItem>
-                                            <SelectItem value="INACTIF">Inactif</SelectItem>
-                                            <SelectItem value="CLOTURE">Clôturé</SelectItem>
-                                        </SelectContent>
-                                    </Select>
                                 </div>
                             </div>
 
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div className="space-y-4 border-t pt-4">
+                                <h3 className="text-lg font-semibold">Paramètres et informations supplémentaires</h3>
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    <div className="flex items-center justify-between">
+                                        <div>
+                                            <Label htmlFor="estPrincipal">Compte principal</Label>
+                                            <p className="text-sm text-muted-foreground">
+                                                Définir ce compte comme le compte principal de trésorerie
+                                            </p>
+                                        </div>
+                                        <Switch
+                                            id="estPrincipal"
+                                            checked={compte.estPrincipal}
+                                            onCheckedChange={(checked) => handleChange('estPrincipal', checked)}
+                                            disabled={submitting}
+                                        />
+                                    </div>
+
+                                    <div className="flex items-center justify-between">
+                                        <div>
+                                            <Label htmlFor="statut">Statut</Label>
+                                            <p className="text-sm text-muted-foreground">
+                                                Statut du compte
+                                            </p>
+                                        </div>
+                                        <Select
+                                            value={compte.statut}
+                                            onValueChange={(value: CompteTresorerie['statut']) =>
+                                                handleChange('statut', value)
+                                            }
+                                            disabled={submitting}
+                                        >
+                                            <SelectTrigger className="w-[180px]">
+                                                <SelectValue placeholder="Statut" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="ACTIF">Actif</SelectItem>
+                                                <SelectItem value="INACTIF">Inactif</SelectItem>
+                                                <SelectItem value="CLOTURE">Clôturé</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div className="space-y-2">
+                                        <Label htmlFor="fonctionGestionnaire">Fonction du gestionnaire (Optionnel)</Label>
+                                        <Input
+                                            id="fonctionGestionnaire"
+                                            value={compte.fonctionGestionnaire || ''}
+                                            onChange={(e) => handleChange('fonctionGestionnaire', e.target.value)}
+                                            placeholder="Ex: Responsable trésorerie"
+                                            disabled={submitting}
+                                        />
+                                        <p className="text-sm text-muted-foreground">
+                                            Fonction du gestionnaire de compte
+                                        </p>
+                                    </div>
+                                </div>
+
                                 <div className="space-y-2">
-                                    <Label htmlFor="fonctionGestionnaire">Fonction du gestionnaire (Optionnel)</Label>
-                                    <Input
-                                        id="fonctionGestionnaire"
-                                        value={compte.fonctionGestionnaire || ''}
-                                        onChange={(e) => handleChange('fonctionGestionnaire', e.target.value)}
-                                        placeholder="Ex: Responsable trésorerie"
+                                    <Label htmlFor="description">Description (Optionnel)</Label>
+                                    <Textarea
+                                        id="description"
+                                        value={compte.description || ''}
+                                        onChange={(e) => handleChange('description', e.target.value)}
+                                        placeholder="Description du compte, informations complémentaires..."
+                                        rows={3}
                                         disabled={submitting}
                                     />
                                     <p className="text-sm text-muted-foreground">
-                                        Fonction du gestionnaire de compte
+                                        Informations complémentaires sur le compte
                                     </p>
                                 </div>
                             </div>
 
-                            <div className="space-y-2">
-                                <Label htmlFor="description">Description (Optionnel)</Label>
-                                <Textarea
-                                    id="description"
-                                    value={compte.description || ''}
-                                    onChange={(e) => handleChange('description', e.target.value)}
-                                    placeholder="Description du compte, informations complémentaires..."
-                                    rows={3}
+                            <div className="flex justify-end gap-4 pt-6 border-t">
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    onClick={resetForm}
                                     disabled={submitting}
-                                />
-                                <p className="text-sm text-muted-foreground">
-                                    Informations complémentaires sur le compte
-                                </p>
+                                >
+                                    Annuler
+                                </Button>
+                                <Button
+                                    type="submit"
+                                    className="gap-2"
+                                    disabled={submitting}
+                                >
+                                    {submitting ? (
+                                        <>
+                                            <Loader2 className="w-4 h-4 animate-spin" />
+                                            {useDemoData ? 'Simulation...' : 'Enregistrement...'}
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Save className="w-4 h-4" />
+                                            {useDemoData ? 'Créer (Démo)' : 'Enregistrer le compte'}
+                                        </>
+                                    )}
+                                </Button>
                             </div>
-                        </div>
-
-                        <div className="flex justify-end gap-4 pt-6 border-t">
-                            <Button
-                                type="button"
-                                variant="outline"
-                                onClick={resetForm}
-                                disabled={submitting}
-                            >
-                                Annuler
-                            </Button>
-                            <Button
-                                type="submit"
-                                className="gap-2"
-                                disabled={submitting}
-                            >
-                                {submitting ? (
-                                    <>
-                                        <Loader2 className="w-4 h-4 animate-spin" />
-                                        {useDemoData ? 'Simulation...' : 'Enregistrement...'}
-                                    </>
-                                ) : (
-                                    <>
-                                        <Save className="w-4 h-4" />
-                                        {useDemoData ? 'Créer (Démo)' : 'Enregistrer le compte'}
-                                    </>
-                                )}
-                            </Button>
-                        </div>
-                    </CardContent>
-                </Card>
-            </form>
-        </div>
+                        </CardContent>
+                    </Card>
+                </form>
+            </div>
+        </MainLayout>
     );
 };
 

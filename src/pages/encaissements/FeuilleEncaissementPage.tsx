@@ -16,6 +16,7 @@ import { Separator } from "@/components/ui/separator";
 import MainLayout from "@/components/layout/MainLayout";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Switch } from "@/components/ui/switch";
+import { useNavigate } from "react-router-dom";
 
 // Configuration API
 const API_BASE_URL = 'http://localhost:8000/api';
@@ -32,6 +33,54 @@ const API_ENDPOINTS = {
     SOCIETES_ACTIVES: `${API_BASE_URL}/societes/actives`,
     SOCIETES: `${API_BASE_URL}/societes`,
     JOURNAUX_TRESORERIE: `${API_BASE_URL}/journaux-tresorerie`
+};
+
+// Helper pour construire les URLs d'API
+const api = (path: string) => path.startsWith('http') ? path : `${API_BASE_URL}${path}`;
+
+// Helper pour parser les réponses JSON de manière sécurisée
+const safeJson = async (res: Response) => {
+    try {
+        const txt = await res.text();
+        const trimmed = txt.trim();
+        if (trimmed.startsWith('<')) {
+            console.error('Expected JSON but received HTML:', trimmed.substring(0, 500));
+            return null;
+        }
+        return JSON.parse(trimmed);
+    } catch (e) {
+        console.error('Failed to parse JSON response', e);
+        return null;
+    }
+};
+
+// Wrapper fetch centralisé avec gestion de l'authentification et des erreurs 401
+const fetchJson = async (url: string, opts: RequestInit = {}, navigate?: any) => {
+    const token = localStorage.getItem('token') || localStorage.getItem('auth_token') || null;
+    const headers: Record<string, string> = { ...(opts.headers as Record<string, string> || {}) };
+    if (!headers['Content-Type'] && opts.body && typeof opts.body === 'string') {
+        headers['Content-Type'] = 'application/json';
+    }
+    if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+    }
+    const res = await fetch(url, { ...opts, headers });
+    // Gestion des erreurs 401 (token expiré/invalide)
+    if (res.status === 401) {
+        try {
+            localStorage.removeItem('token');
+            localStorage.removeItem('user');
+            localStorage.removeItem('isAuthenticated');
+        } catch (e) {
+            // ignore
+        }
+        if (navigate) {
+            navigate('/login');
+        } else if (typeof window !== 'undefined' && window.location) {
+            window.location.href = '/login';
+        }
+    }
+    return res;
 };
 
 // Types basés sur vos entités et contrôleurs
@@ -159,11 +208,11 @@ interface FeuilleEncaissement {
     nomClient: string;
     tiers?: Tiers | null;
     compteClient: PlanComptable;
-    banqueClient?: any | null;
     referenceCheque?: string | null;
     referenceVirement?: string | null;
     referenceAutre?: string | null;
     modePaiement: 'cheque' | 'virement' | 'especes' | 'mobile_money' | 'carte' | 'prelevement' | 'autre';
+    typePaiement: 'avance' | 'acompte' | 'facture';
     numeroOrdre?: string | null;
     factures: Facture[];
     referenceBonCommande?: string | null;
@@ -242,8 +291,10 @@ const formatDateForSymfony = (dateString: string): string => {
 
 const FeuilleEncaissementPage = () => {
     const { toast } = useToast();
+    const navigate = useNavigate();
     const [loading, setLoading] = useState(false);
     const [refreshing, setRefreshing] = useState(false);
+    const [userRoles, setUserRoles] = useState<string[]>([]);
 
     // États pour les données
     const [societe, setSociete] = useState<Societe | null>(null);
@@ -261,6 +312,7 @@ const FeuilleEncaissementPage = () => {
             statut: 'ACTIF'
         },
         modePaiement: 'cheque',
+        typePaiement: 'facture',
         factures: [],
         montantPaye: 0,
         compteTresorerie: {
@@ -334,6 +386,27 @@ const FeuilleEncaissementPage = () => {
     const [isLoadingSociete, setIsLoadingSociete] = useState(false);
     const [isLoadingDevises, setIsLoadingDevises] = useState(false);
     const [isCreatingFacture, setIsCreatingFacture] = useState(false);
+    // Fonction pour générer un numéro de facture automatiquement
+    const handleGenererNumeroFacture = () => {
+        const year = new Date().getFullYear();
+        const month = String(new Date().getMonth() + 1).padStart(2, '0');
+        const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+        const numero = `FACT-${year}${month}-${random}`;
+
+        setNewFacture(prev => ({
+            ...prev,
+            numero
+        }));
+
+        toast({
+            title: "Numéro généré",
+            description: `Numéro: ${numero}`,
+        });
+    };
+
+
+    // Historique des actions pour la feuille
+    const [historique, setHistorique] = useState<any[]>([]);
 
     // États pour la gestion des erreurs
     const [error, setError] = useState<string | null>(null);
@@ -357,6 +430,12 @@ const FeuilleEncaissementPage = () => {
         autre: 'Autre'
     };
 
+    const TYPES_PAIEMENT = {
+        avance: 'Avance',
+        acompte: 'Acompte',
+        facture: 'Paiement facture'
+    };
+
     const STATUTS = {
         brouillon: { label: 'Brouillon', color: 'bg-gray-100 text-gray-800' },
         attente_validation: { label: 'En attente de validation', color: 'bg-yellow-100 text-yellow-800' },
@@ -369,6 +448,7 @@ const FeuilleEncaissementPage = () => {
     // Charger les données initiales
     useEffect(() => {
         fetchInitialData();
+        fetchUserRoles();
     }, []);
 
     // Rafraîchir la feuille lorsqu'on a un ID
@@ -377,6 +457,25 @@ const FeuilleEncaissementPage = () => {
             refreshFeuille();
         }
     }, [feuille.id]);
+
+    const fetchUserRoles = async () => {
+        try {
+            const token = localStorage.getItem('token');
+            if (!token) return;
+            
+            // Décoder le token JWT pour extraire les rôles
+            const base64Url = token.split('.')[1];
+            const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+            const jsonPayload = decodeURIComponent(atob(base64).split('').map(c => {
+                return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+            }).join(''));
+            
+            const payload = JSON.parse(jsonPayload);
+            setUserRoles(payload.roles || []);
+        } catch (error) {
+            console.error('Erreur lors du décodage du token:', error);
+        }
+    };
 
     const fetchInitialData = async () => {
         try {
@@ -412,9 +511,7 @@ const FeuilleEncaissementPage = () => {
 
         setRefreshing(true);
         try {
-            const response = await fetch(`${API_ENDPOINTS.FEUILLES_ENCAISSEMENT}/${feuille.id}`, {
-                headers: getAuthHeaders()
-            });
+            const response = await fetchJson(`${API_ENDPOINTS.FEUILLES_ENCAISSEMENT}/${feuille.id}`, {}, navigate);
 
             if (response.ok) {
                 const result = await response.json();
@@ -425,6 +522,12 @@ const FeuilleEncaissementPage = () => {
                         statut: result.data.statut,
                         dateEncaissement: formatDateForInput(result.data.dateEncaissement)
                     }));
+                    // Charger l'historique si disponible
+                    try {
+                        await fetchHistorique(result.data.id || feuille.id);
+                    } catch (e) {
+                        // silent
+                    }
                 }
             }
         } catch (error) {
@@ -438,14 +541,10 @@ const FeuilleEncaissementPage = () => {
     const fetchSociete = async () => {
         setIsLoadingSociete(true);
         try {
-            const response = await fetch(API_ENDPOINTS.SOCIETES_ACTIVES, {
-                headers: getAuthHeaders()
-            });
+            const response = await fetchJson(API_ENDPOINTS.SOCIETES_ACTIVES, {}, navigate);
 
             if (!response.ok) {
-                const fallbackResponse = await fetch(API_ENDPOINTS.SOCIETES, {
-                    headers: getAuthHeaders()
-                });
+                const fallbackResponse = await fetchJson(API_ENDPOINTS.SOCIETES, {}, navigate);
 
                 if (!fallbackResponse.ok) {
                     throw new Error('Impossible de récupérer les informations de la société');
@@ -516,9 +615,7 @@ const FeuilleEncaissementPage = () => {
     const fetchAllDevises = async () => {
         setIsLoadingDevises(true);
         try {
-            const response = await fetch(API_ENDPOINTS.DEVISES, {
-                headers: getAuthHeaders()
-            });
+            const response = await fetchJson(API_ENDPOINTS.DEVISES, {}, navigate);
 
             if (response.ok) {
                 const data = await response.json();
@@ -535,9 +632,7 @@ const FeuilleEncaissementPage = () => {
     const fetchTiers = async () => {
         setIsLoadingTiers(true);
         try {
-            const response = await fetch(`${API_ENDPOINTS.TIERS}?limit=100`, {
-                headers: getAuthHeaders()
-            });
+            const response = await fetchJson(`${API_ENDPOINTS.TIERS}?limit=100`, {}, navigate);
 
             if (!response.ok) {
                 if (response.status === 401) {
@@ -564,9 +659,7 @@ const FeuilleEncaissementPage = () => {
     const fetchComptesTresorerie = async () => {
         setIsLoadingComptes(true);
         try {
-            const response = await fetch(API_ENDPOINTS.COMPTES_TRESORERIE, {
-                headers: getAuthHeaders()
-            });
+            const response = await fetchJson(API_ENDPOINTS.COMPTES_TRESORERIE, {}, navigate);
 
             if (!response.ok) {
                 if (response.status === 401) {
@@ -611,9 +704,7 @@ const FeuilleEncaissementPage = () => {
     const fetchPlanComptable = async () => {
         setIsLoadingPlanComptable(true);
         try {
-            const response = await fetch(`${API_ENDPOINTS.PLAN_COMPTABLE}?limit=100`, {
-                headers: getAuthHeaders()
-            });
+            const response = await fetchJson(`${API_ENDPOINTS.PLAN_COMPTABLE}?limit=100`, {}, navigate);
 
             if (!response.ok) {
                 if (response.status === 401) {
@@ -641,15 +732,11 @@ const FeuilleEncaissementPage = () => {
         setIsLoadingFactures(true);
         try {
             // CORRECTION : D'abord essayer les factures impayées
-            let response = await fetch(`${API_ENDPOINTS.FACTURES}/impayees`, {
-                headers: getAuthHeaders()
-            });
+            let response = await fetchJson(`${API_ENDPOINTS.FACTURES}/impayees`, {}, navigate);
 
             if (!response.ok || response.status === 404) {
                 // CORRECTION : Essayer sans filtre statut
-                response = await fetch(`${API_ENDPOINTS.FACTURES}?limit=100`, {
-                    headers: getAuthHeaders()
-                });
+                response = await fetchJson(`${API_ENDPOINTS.FACTURES}?limit=100`, {}, navigate);
             }
 
             if (response.ok) {
@@ -718,6 +805,24 @@ const FeuilleEncaissementPage = () => {
         }
     };
 
+    // Récupérer l'historique d'une feuille (si endpoint disponible)
+    const fetchHistorique = async (feuilleId?: number) => {
+        if (!feuilleId) return;
+        try {
+            const response = await fetchJson(`${API_ENDPOINTS.FEUILLES_ENCAISSEMENT}/${feuilleId}/historique`, {}, navigate);
+            if (!response.ok) return;
+            const data = await response.json();
+            let items = [] as any[];
+            if (data.success && data.data) items = Array.isArray(data.data) ? data.data : [data.data];
+            else if (Array.isArray(data)) items = data;
+            else if (data.items && Array.isArray(data.items)) items = data.items;
+            setHistorique(items);
+        } catch (e) {
+            // Pas critique — endpoint peut ne pas exister encore
+            console.debug('Historique non disponible', e);
+        }
+    };
+
     // Gestion du changement de mode de paiement
     const handleModePaiementChange = (value: string) => {
         setFeuille({
@@ -726,6 +831,13 @@ const FeuilleEncaissementPage = () => {
             referenceCheque: value === 'cheque' ? feuille.referenceCheque : null,
             referenceVirement: value === 'virement' ? feuille.referenceVirement : null,
             referenceAutre: value === 'autre' ? feuille.referenceAutre : null
+        });
+    };
+
+    const handleTypePaiementChange = (value: string) => {
+        setFeuille({
+            ...feuille,
+            typePaiement: value as any
         });
     };
 
@@ -745,6 +857,15 @@ const FeuilleEncaissementPage = () => {
     // Ajouter une facture
     const handleAddFacture = () => {
         if (selectedFacture) {
+            // Empêcher l'ajout de factures déjà payées ou à solde nul
+            const statut = (selectedFacture.statut || '').toString().toLowerCase();
+            if (statut === 'payee' || selectedFacture.solde <= 0) {
+                toast({ title: 'Facture invalide', description: 'Cette facture est déjà payée ou n\'a pas de solde à encaisser', variant: 'destructive' });
+                setShowFacturesModal(false);
+                setSelectedFacture(null);
+                return;
+            }
+
             if (!feuille.factures.some(f => f.id === selectedFacture.id)) {
                 const nouvellesFactures = [...feuille.factures, selectedFacture];
                 const totalFactures = nouvellesFactures.reduce((total, facture) => total + (facture.montantTotal || facture.montant || 0), 0);
@@ -823,6 +944,27 @@ const FeuilleEncaissementPage = () => {
             return;
         }
 
+        // Valider les règles métier
+        const businessValidation = validateBusinessRules();
+        if (!businessValidation.valid) {
+            toast({
+                title: "Validation métier",
+                description: businessValidation.message,
+                variant: "destructive",
+            });
+            return;
+        }
+
+        // Vérifier les permissions si feuille validée
+        if (feuille.id && feuille.statut === 'valide' && !canEditValidatedFeuille()) {
+            toast({
+                title: "Permission refusée",
+                description: "Vous n'avez pas les droits pour modifier une feuille validée",
+                variant: "destructive",
+            });
+            return;
+        }
+
         const token = localStorage.getItem('token');
         if (!token) {
             toast({
@@ -851,6 +993,7 @@ const FeuilleEncaissementPage = () => {
                 codeClient: feuille.codeClient,
                 nomClient: feuille.nomClient,
                 modePaiement: feuille.modePaiement,
+                typePaiement: feuille.typePaiement,
                 montantPaye: feuille.montantPaye.toString(),
                 statut: feuille.statut,
             };
@@ -927,15 +1070,18 @@ const FeuilleEncaissementPage = () => {
             console.log('État actuel de feuille:', feuille);
             console.log('Devise société:', deviseSociete);
 
-            const response = await fetch(url, {
+            const response = await fetchJson(url, {
                 method,
-                headers: getAuthHeaders(),
                 body: JSON.stringify(dataToSend)
-            });
+            }, navigate);
 
             if (!response.ok) {
                 if (response.status === 401) {
                     throw new Error('Session expirée. Veuillez vous reconnecter.');
+                }
+
+                if (response.status === 403) {
+                    throw new Error('Vous n\'avez pas les permissions nécessaires pour effectuer cette action.');
                 }
 
                 const errorText = await response.text();
@@ -946,12 +1092,23 @@ const FeuilleEncaissementPage = () => {
                 try {
                     const errorData = JSON.parse(errorText);
                     errorMessage = errorData.message || errorData.error || errorMessage;
+                    
+                    // Messages spécifiques pour certaines erreurs backend
+                    if (errorMessage.includes('journal')) {
+                        errorMessage = 'Aucun journal de trésorerie disponible. Veuillez configurer un journal avant de valider.';
+                    }
+                    
                     // Si il y a des erreurs de validation détaillées
                     if (errorData.errors) {
                         const validationErrors = Object.entries(errorData.errors)
                             .map(([field, message]) => `${field}: ${message}`)
                             .join(', ');
                         errorMessage = `Erreurs de validation: ${validationErrors}`;
+                    }
+                    
+                    // Afficher les factures invalides si présentes
+                    if (errorData.invalid_facture_ids) {
+                        errorMessage += ` (Factures invalides: ${errorData.invalid_facture_ids.join(', ')})`;
                     }
                 } catch {
                     errorMessage = errorText || errorMessage;
@@ -1008,10 +1165,9 @@ const FeuilleEncaissementPage = () => {
         }
 
         try {
-            const response = await fetch(`${API_ENDPOINTS.FEUILLES_ENCAISSEMENT}/${feuille.id}/soumettre`, {
-                method: 'POST',
-                headers: getAuthHeaders('application/json'),
-            });
+            const response = await fetchJson(`${API_ENDPOINTS.FEUILLES_ENCAISSEMENT}/${feuille.id}/soumettre`, {
+                method: 'POST'
+            }, navigate);
 
             if (!response.ok) {
                 if (response.status === 401) {
@@ -1046,6 +1202,37 @@ const FeuilleEncaissementPage = () => {
     // Valider la feuille - VERSION AMÉLIORÉE
     const handleValider = async () => {
         if (!feuille.id) return;
+
+        // Vérifier les permissions
+        if (!canValidateFeuille()) {
+            toast({
+                title: 'Permission refusée',
+                description: 'Seuls les administrateurs peuvent valider une feuille d\'encaissement.',
+                variant: 'destructive'
+            });
+            return;
+        }
+
+        // Vérification client : référence chèque requise si mode chèque
+        if (feuille.modePaiement === 'cheque' && (!feuille.referenceCheque || feuille.referenceCheque.trim() === '')) {
+            toast({
+                title: 'Validation impossible',
+                description: 'La référence du chèque est requise pour valider une feuille en mode chèque.',
+                variant: 'destructive'
+            });
+            return;
+        }
+
+        // Valider les règles métier
+        const businessValidation = validateBusinessRules();
+        if (!businessValidation.valid) {
+            toast({
+                title: "Validation métier",
+                description: businessValidation.message,
+                variant: "destructive",
+            });
+            return;
+        }
 
         // VÉRIFIER LE STATUT AVANT D'ESSAYER DE VALIDER
         if (feuille.statut === 'valide') {
@@ -1085,10 +1272,9 @@ const FeuilleEncaissementPage = () => {
         }
 
         try {
-            const response = await fetch(`${API_ENDPOINTS.FEUILLES_ENCAISSEMENT}/${feuille.id}/valider`, {
-                method: 'POST',
-                headers: getAuthHeaders('application/json'),
-            });
+            const response = await fetchJson(`${API_ENDPOINTS.FEUILLES_ENCAISSEMENT}/${feuille.id}/valider`, {
+                method: 'POST'
+            }, navigate);
 
             const responseText = await response.text();
             console.log('Réponse brute validation:', responseText);
@@ -1157,6 +1343,13 @@ const FeuilleEncaissementPage = () => {
                     description: result.message || "Feuille validée avec succès",
                     variant: "default",
                 });
+                // Tenter de récupérer l'historique si disponible
+                try {
+                    const feuilleId = result.data?.id || feuille.id;
+                    await fetchHistorique(feuilleId);
+                } catch (e) {
+                    // silent
+                }
             } else {
                 throw new Error(result.message || "Erreur lors de la validation");
             }
@@ -1185,11 +1378,10 @@ const FeuilleEncaissementPage = () => {
         }
 
         try {
-            const response = await fetch(`${API_ENDPOINTS.FEUILLES_ENCAISSEMENT}/${feuille.id}/rejeter`, {
+            const response = await fetchJson(`${API_ENDPOINTS.FEUILLES_ENCAISSEMENT}/${feuille.id}/rejeter`, {
                 method: 'POST',
-                headers: getAuthHeaders('application/json'),
                 body: JSON.stringify({ motif: motifRejet })
-            });
+            }, navigate);
 
             const responseText = await response.text();
             console.log('Réponse brute rejet:', responseText);
@@ -1261,11 +1453,10 @@ const FeuilleEncaissementPage = () => {
 
             console.log("Données envoyées pour création de facture:", factureData);
 
-            const response = await fetch(API_ENDPOINTS.FACTURES, {
+            const response = await fetchJson(API_ENDPOINTS.FACTURES, {
                 method: 'POST',
-                headers: getAuthHeaders('application/json'),
-                body: JSON.stringify(factureData),
-            });
+                body: JSON.stringify(factureData)
+            }, navigate);
 
             const responseText = await response.text();
             console.log("Réponse brute:", responseText);
@@ -1342,6 +1533,16 @@ const FeuilleEncaissementPage = () => {
         });
     };
 
+    // Vérifier si l'utilisateur peut éditer une feuille validée
+    const canEditValidatedFeuille = () => {
+        return userRoles.includes('ROLE_ADMINISTRATEUR') || userRoles.includes('ROLE_SUPER_ADMIN');
+    };
+
+    // Vérifier si l'utilisateur peut valider
+    const canValidateFeuille = () => {
+        return userRoles.includes('ROLE_ADMINISTRATEUR') || userRoles.includes('ROLE_SUPER_ADMIN');
+    };
+
     // Déterminer si le formulaire est valide
     const isFormValid = () => {
         return (
@@ -1352,6 +1553,60 @@ const FeuilleEncaissementPage = () => {
             feuille.compteTresorerie?.id > 0 &&
             feuille.compteClient?.id > 0
         );
+    };
+
+    // Valider les règles métier avant soumission
+    const validateBusinessRules = (): { valid: boolean; message?: string } => {
+        const totalFactures = calculateTotalFactures();
+        const montantPaye = feuille.montantPaye || 0;
+        const typePaiement = feuille.typePaiement;
+
+        // Avance : pas de factures requises
+        if (typePaiement === 'avance') {
+            if (feuille.factures.length > 0) {
+                return {
+                    valid: false,
+                    message: 'Une avance ne doit pas être liée à des factures'
+                };
+            }
+            return { valid: true };
+        }
+
+        // Acompte : montant < total factures
+        if (typePaiement === 'acompte') {
+            if (feuille.factures.length === 0) {
+                return {
+                    valid: false,
+                    message: 'Un acompte nécessite au moins une facture liée'
+                };
+            }
+            if (montantPaye >= totalFactures) {
+                return {
+                    valid: false,
+                    message: 'Pour un acompte, le montant doit être inférieur au total des factures'
+                };
+            }
+            return { valid: true };
+        }
+
+        // Paiement facture : montant = total factures
+        if (typePaiement === 'facture') {
+            if (feuille.factures.length === 0) {
+                return {
+                    valid: false,
+                    message: 'Un paiement de facture nécessite au moins une facture liée'
+                };
+            }
+            if (Math.abs(montantPaye - totalFactures) > 0.01) {
+                return {
+                    valid: false,
+                    message: `Pour un paiement de facture, le montant doit être égal au total des factures (${formatMontant(totalFactures)})`
+                };
+            }
+            return { valid: true };
+        }
+
+        return { valid: true };
     };
 
     // Afficher l'information de la société et de la devise
@@ -1394,7 +1649,7 @@ const FeuilleEncaissementPage = () => {
         return (
             <div className="mb-4 p-3 bg-gray-50 border border-gray-200 rounded-md">
                 <div className="flex items-start justify-between">
-                    <div>
+                    <div className="flex-1">
                         <div className="text-sm font-medium text-gray-800">
                             {feuille.statut === 'valide' && 'Validée le'}
                             {feuille.statut === 'pointe' && 'Pointée le'}
@@ -1409,8 +1664,20 @@ const FeuilleEncaissementPage = () => {
                             </div>
                         )}
                         {feuille.operationTresorerie && (
-                            <div className="mt-2 text-sm text-green-600">
-                                <span className="font-medium">Opération de trésorerie créée</span>
+                            <div className="mt-2 space-y-1">
+                                <div className="text-sm text-green-600">
+                                    <strong>✓</strong> Opération de trésorerie créée
+                                </div>
+                                {feuille.operationTresorerie.journal && (
+                                    <div className="text-xs text-gray-500">
+                                        Journal : {feuille.operationTresorerie.journal.intitule || feuille.operationTresorerie.journal.code}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                        {feuille.factures.length > 0 && feuille.statut === 'valide' && (
+                            <div className="mt-2 text-xs text-gray-500">
+                                <strong>Allocation :</strong> Montant réparti sur {feuille.factures.length} facture(s)
                             </div>
                         )}
                     </div>
@@ -1470,7 +1737,7 @@ const FeuilleEncaissementPage = () => {
                             <Printer className="w-4 h-4" />
                             Imprimer
                         </Button>
-                        {feuille.statut === 'brouillon' && (
+                        {(feuille.statut === 'brouillon' || (feuille.statut === 'valide' && canEditValidatedFeuille())) && (
                             <Button onClick={handleSave} disabled={loading || !isFormValid()} className="gap-2">
                                 {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                                 {loading ? 'Sauvegarde...' : 'Sauvegarder'}
@@ -1518,8 +1785,34 @@ const FeuilleEncaissementPage = () => {
                 {/* Information sur la société et devise */}
                 {renderSocieteInfo()}
 
+                {/* Alerte permissions si feuille validée et utilisateur non autorisé */}
+                {feuille.statut === 'valide' && !canEditValidatedFeuille() && (
+                    <Alert className="bg-blue-50 border-blue-200">
+                        <AlertCircle className="h-4 w-4 text-blue-600" />
+                        <AlertDescription className="text-blue-800">
+                            <strong>Lecture seule :</strong> Cette feuille est validée. Seuls les administrateurs peuvent la modifier.
+                        </AlertDescription>
+                    </Alert>
+                )}
+
                 {/* Information sur la validation */}
                 {renderValidationInfo()}
+
+                {/* Alerte si règles métier non respectées */}
+                {(() => {
+                    const validation = validateBusinessRules();
+                    if (!validation.valid && feuille.statut === 'brouillon') {
+                        return (
+                            <Alert className="bg-amber-50 border-amber-200">
+                                <AlertCircle className="h-4 w-4 text-amber-600" />
+                                <AlertDescription className="text-amber-800">
+                                    <strong>Règle métier non respectée :</strong> {validation.message}
+                                </AlertDescription>
+                            </Alert>
+                        );
+                    }
+                    return null;
+                })()}
 
                 {/* Avertissement si la devise société n'est pas chargée */}
                 {!deviseSociete && !isLoadingSociete && (
@@ -1762,6 +2055,26 @@ const FeuilleEncaissementPage = () => {
                                                 </SelectTrigger>
                                                 <SelectContent>
                                                     {Object.entries(MODES_PAIEMENT).map(([value, label]) => (
+                                                        <SelectItem key={value} value={value}>
+                                                            {label}
+                                                        </SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+
+                                        <div className="space-y-2">
+                                            <Label>Type de paiement *</Label>
+                                            <Select
+                                                value={feuille.typePaiement}
+                                                onValueChange={handleTypePaiementChange}
+                                                disabled={feuille.statut !== 'brouillon'}
+                                            >
+                                                <SelectTrigger>
+                                                    <SelectValue />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    {Object.entries(TYPES_PAIEMENT).map(([value, label]) => (
                                                         <SelectItem key={value} value={value}>
                                                             {label}
                                                         </SelectItem>
@@ -2258,9 +2571,43 @@ const FeuilleEncaissementPage = () => {
                             <CardHeader>
                                 <CardTitle>Historique des feuilles d'encaissement</CardTitle>
                             </CardHeader>
-                            <CardContent>
-                                <div className="text-muted-foreground">Fonctionnalité en cours de développement...</div>
-                            </CardContent>
+                                    <CardContent>
+                                        {historique.length === 0 ? (
+                                            <div className="text-muted-foreground">Aucun historique disponible.</div>
+                                        ) : (
+                                            <div className="space-y-2">
+                                                <Table>
+                                                    <TableHeader>
+                                                        <TableRow>
+                                                            <TableHead>Date</TableHead>
+                                                            <TableHead>Action</TableHead>
+                                                            <TableHead>Utilisateur</TableHead>
+                                                            <TableHead>Détails</TableHead>
+                                                        </TableRow>
+                                                    </TableHeader>
+                                                    <TableBody>
+                                                        {historique.map((h) => (
+                                                            <TableRow key={h.id}>
+                                                                <TableCell>{h.createdAt ? new Date(h.createdAt).toLocaleString('fr-FR') : '-'}</TableCell>
+                                                                <TableCell>{h.action}</TableCell>
+                                                                <TableCell>{h.utilisateur ? (h.utilisateur.nom || h.utilisateur.id) : '-'}</TableCell>
+                                                                <TableCell>
+                                                                    {(() => {
+                                                                        try {
+                                                                            const d = JSON.parse(h.details || '{}');
+                                                                            return typeof d === 'object' ? Object.entries(d).map(([k, v]) => (<div key={k}><strong>{k}:</strong> {String(v)}</div>)) : String(d);
+                                                                        } catch (e) {
+                                                                            return h.details || '-';
+                                                                        }
+                                                                    })()}
+                                                                </TableCell>
+                                                            </TableRow>
+                                                        ))}
+                                                    </TableBody>
+                                                </Table>
+                                            </div>
+                                        )}
+                                    </CardContent>
                         </Card>
                     </TabsContent>
 
@@ -2293,13 +2640,24 @@ const FeuilleEncaissementPage = () => {
                             <div className="grid grid-cols-2 gap-4">
                                 <div className="space-y-2">
                                     <Label htmlFor="facture-numero">Numéro de facture *</Label>
-                                    <Input
-                                        id="facture-numero"
-                                        value={newFacture.numero}
-                                        onChange={(e) => setNewFacture(prev => ({ ...prev, numero: e.target.value }))}
-                                        placeholder="Ex: FACT-2024-001"
-                                        required
-                                    />
+                                    <div className="flex gap-2">
+                                        <Input
+                                            id="facture-numero"
+                                            value={newFacture.numero}
+                                            onChange={(e) => setNewFacture(prev => ({ ...prev, numero: e.target.value }))}
+                                            placeholder="Ex: FACT-2024-001"
+                                            required
+                                        />
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            onClick={handleGenererNumeroFacture}
+                                            disabled={isCreatingFacture}
+                                            title="Générer un numéro automatiquement"
+                                        >
+                                            <FileText className="w-4 h-4" />
+                                        </Button>
+                                    </div>
                                 </div>
 
                                 <div className="space-y-2">

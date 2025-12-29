@@ -60,7 +60,15 @@ const navigation = [
 
 interface User {
     roles: string[];
-    societeNom?: string;
+    societe?: {
+        id: number;
+        raisonSociale: string;
+        deviseParDefaut?: {
+            code: string;
+            intitule: string;
+            symbole: string;
+        };
+    };
     firstName?: string;
     lastName?: string;
     email?: string;
@@ -268,7 +276,7 @@ const Sidebar = () => {
                 <div className="px-4 py-3 rounded-lg bg-sidebar-accent/50">
                     <p className="text-xs font-medium text-sidebar-foreground">Société</p>
                     <p className="text-sm font-semibold text-sidebar-foreground mt-1">
-                        {user.societeNom || "Société non définie"}
+                        {user.societe?.raisonSociale || "Société non définie"}
                     </p>
                 </div>
             </div>

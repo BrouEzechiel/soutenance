@@ -64,7 +64,74 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import MainLayout from "@/components/layout/MainLayout";
 
-const API_URL = "http://127.0.0.1:8000/api/plan-comptables";
+// Allow access to Vite env in this file
+declare global {
+    interface ImportMetaEnv {
+        VITE_API_BASE_URL?: string;
+    }
+    interface ImportMeta {
+        readonly env: ImportMetaEnv;
+    }
+}
+
+const API_BASE_URL = "http://127.0.0.1:8000/api";
+const API_BASE = (import.meta.env as any).VITE_API_BASE_URL ?? API_BASE_URL;
+const api = (path: string) => `${API_BASE}/${path.replace(/^\//, "")}`;
+const API_URL = api("/plan-comptables");
+
+const getAuthHeaders = (contentType: string | null = "application/json"): HeadersInit => {
+    const token = localStorage.getItem("token");
+    const headers: HeadersInit = {
+        Accept: "application/json",
+    };
+
+    if (contentType) {
+        headers["Content-Type"] = contentType;
+    }
+
+    if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+    }
+
+    return headers;
+};
+
+async function safeJson(res: Response) {
+    const ct = res.headers.get("content-type") || "";
+    if (ct.includes("application/json")) return res.json();
+    const text = await res.text();
+    try {
+        return JSON.parse(text);
+    } catch {
+        return text;
+    }
+}
+
+async function fetchJson(url: string, options: RequestInit = {}, navigate?: any) {
+    const headers = { ...getAuthHeaders(), ...(options.headers || {}) } as HeadersInit;
+    const resp = await fetch(url, { ...options, headers });
+    const data = await safeJson(resp);
+
+    if (resp.status === 401) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        localStorage.setItem("isAuthenticated", "false");
+        if (navigate) navigate("/login");
+        const err: any = new Error("Unauthorized");
+        err.status = 401;
+        err.data = data;
+        throw err;
+    }
+
+    if (!resp.ok) {
+        const err: any = new Error("Request error");
+        err.status = resp.status;
+        err.data = data;
+        throw err;
+    }
+
+    return data;
+}
 
 interface PlanComptable {
     id: number;
@@ -237,17 +304,15 @@ const GestionPlanComptable = () => {
         });
     };
 
-    const authHeaders = (): HeadersInit => ({
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-    });
-
     const handleSessionExpired = () => {
         toast({
             title: "Session expirée",
             description: "Veuillez vous reconnecter.",
             variant: "destructive"
         });
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        localStorage.setItem("isAuthenticated", "false");
         setTimeout(() => navigate("/login"), 2000);
     };
 
@@ -256,38 +321,32 @@ const GestionPlanComptable = () => {
 
         try {
             setLoadingSociete(true);
-            const res = await fetch("http://127.0.0.1:8000/api/societes/actives", {
-                headers: authHeaders()
-            });
+            const data = await fetchJson(api("/societes/actives"), {}, navigate);
+            const payload = data?.data ?? data;
+            const societe = Array.isArray(payload) ? payload[0] : null;
 
-            if (res.ok) {
-                const data = await res.json();
-                console.log("Données sociétés retournées:", data);
+            if (societe) {
+                console.log("Société chargée:", societe.raisonSociale, "ID:", societe.id);
+                console.log("Devise par défaut de la société:", societe.deviseParDefaut);
 
-                if (data.success && data.data && data.data.length > 0) {
-                    const societe = data.data[0];
-                    console.log("Société chargée:", societe.raisonSociale, "ID:", societe.id);
-                    console.log("Devise par défaut de la société:", societe.deviseParDefaut);
-
-                    setSocieteInfo({
-                        id: societe.id,
-                        raisonSociale: societe.raisonSociale,
-                        deviseParDefaut: societe.deviseParDefaut ? {
+                setSocieteInfo({
+                    id: societe.id,
+                    raisonSociale: societe.raisonSociale,
+                    deviseParDefaut: societe.deviseParDefaut
+                        ? {
                             id: societe.deviseParDefaut.id,
                             code: societe.deviseParDefaut.code,
                             intitule: societe.deviseParDefaut.intitule,
                             symbole: societe.deviseParDefaut.symbole
-                        } : null
-                    });
-                } else {
-                    console.warn("Aucune société retournée ou succès false");
-                    setSocieteInfo(null);
-                }
+                        }
+                        : null
+                });
             } else {
-                console.error("Erreur HTTP:", res.status);
+                console.warn("Aucune société retournée");
                 setSocieteInfo(null);
             }
-        } catch (err) {
+        } catch (err: any) {
+            if (err?.status === 401) return handleSessionExpired();
             console.error("Erreur chargement société:", err);
             setSocieteInfo(null);
         } finally {
@@ -306,24 +365,14 @@ const GestionPlanComptable = () => {
                 limit: pagination.limit.toString()
             });
 
-            if (searchTerm) params.append('search', searchTerm);
-            if (filterType !== "all") params.append('type', filterType);
-            if (filterClasse !== "all") params.append('classe', filterClasse);
-            if (filterStatut !== "all") params.append('statut', filterStatut);
+            if (searchTerm) params.append("search", searchTerm);
+            if (filterType !== "all") params.append("type", filterType);
+            if (filterClasse !== "all") params.append("classe", filterClasse);
+            if (filterStatut !== "all") params.append("statut", filterStatut);
 
             const url = `${API_URL}?${params.toString()}`;
 
-            const res = await fetch(url, {
-                headers: authHeaders()
-            });
-
-            if (res.status === 401) return handleSessionExpired();
-
-            if (!res.ok) {
-                throw new Error(`Erreur ${res.status}`);
-            }
-
-            const response: ApiResponse = await res.json();
+            const response: ApiResponse = await fetchJson(url, {}, navigate);
 
             if (response.success && response.data) {
                 const comptesData = Array.isArray(response.data) ? response.data : [];
@@ -360,6 +409,7 @@ const GestionPlanComptable = () => {
             }
 
         } catch (err: any) {
+            if (err?.status === 401) return handleSessionExpired();
             console.error(err);
             toast({
                 title: "Erreur",
@@ -376,21 +426,15 @@ const GestionPlanComptable = () => {
         if (!token) return handleSessionExpired();
 
         try {
-            const res = await fetch(`${API_URL}/${compteId}`, {
+            const data: ApiResponse = await fetchJson(`${API_URL}/${compteId}`, {
                 method: "PUT",
-                headers: authHeaders(),
                 body: JSON.stringify({
-                    // On assigne la devise de la société si elle existe
                     devise: societeInfo?.deviseParDefaut?.id || null
                 })
-            });
+            }, navigate);
 
-            if (res.status === 401) return handleSessionExpired();
-
-            const data: ApiResponse = await res.json();
-
-            if (!res.ok || !data.success) {
-                throw new Error(data.message || `Erreur ${res.status}`);
+            if (!data.success) {
+                throw new Error(data.message || "Erreur lors de la mise à jour de la devise");
             }
 
             toast({
@@ -402,6 +446,7 @@ const GestionPlanComptable = () => {
             await fetchComptes(pagination.page);
 
         } catch (err: any) {
+            if (err?.status === 401) return handleSessionExpired();
             console.error(err);
             toast({
                 title: "Erreur",
@@ -497,27 +542,20 @@ const GestionPlanComptable = () => {
         console.log("Société info:", societeInfo);
 
         try {
-            const res = await fetch(url, {
+            const data: ApiResponse = await fetchJson(url, {
                 method,
-                headers: authHeaders(),
                 body: JSON.stringify(payload)
-            });
+            }, navigate);
 
-            if (res.status === 401) return handleSessionExpired();
-
-            const data: ApiResponse = await res.json();
-
-            if (!res.ok || !data.success) {
-                let errorMsg = `Erreur ${res.status}`;
+            if (!data.success) {
+                let errorMsg = data.message || "Erreur inconnue";
 
                 if (data.errors) {
                     if (Array.isArray(data.errors)) {
                         errorMsg = data.errors.map(err => err.message).join(" • ");
-                    } else if (typeof data.errors === 'string') {
+                    } else if (typeof data.errors === "string") {
                         errorMsg = data.errors;
                     }
-                } else if (data.message) {
-                    errorMsg = data.message;
                 }
 
                 throw new Error(errorMsg);
@@ -549,6 +587,7 @@ const GestionPlanComptable = () => {
             await fetchComptes(pagination.page);
 
         } catch (err: any) {
+            if (err?.status === 401) return handleSessionExpired();
             console.error("Erreur lors de l'enregistrement:", err);
             toast({
                 title: "Erreur",
@@ -588,17 +627,10 @@ const GestionPlanComptable = () => {
                 ? `${API_URL}/${compte.id}/deactivate`
                 : `${API_URL}/${compte.id}/activate`;
 
-            const res = await fetch(endpoint, {
-                method: "PATCH",
-                headers: authHeaders()
-            });
+            const data: ApiResponse = await fetchJson(endpoint, { method: "PATCH" }, navigate);
 
-            if (res.status === 401) return handleSessionExpired();
-
-            const data: ApiResponse = await res.json();
-
-            if (!res.ok || !data.success) {
-                throw new Error(data.message || `Erreur ${res.status}`);
+            if (!data.success) {
+                throw new Error(data.message || "Impossible de modifier le statut");
             }
 
             toast({
@@ -609,6 +641,7 @@ const GestionPlanComptable = () => {
             await fetchComptes(pagination.page);
 
         } catch (err: any) {
+            if (err?.status === 401) return handleSessionExpired();
             console.error(err);
             toast({
                 title: "Erreur",
@@ -626,17 +659,10 @@ const GestionPlanComptable = () => {
                 ? `${API_URL}/${compte.id}/deverrouiller`
                 : `${API_URL}/${compte.id}/verrouiller`;
 
-            const res = await fetch(endpoint, {
-                method: "PATCH",
-                headers: authHeaders()
-            });
+            const data: ApiResponse = await fetchJson(endpoint, { method: "PATCH" }, navigate);
 
-            if (res.status === 401) return handleSessionExpired();
-
-            const data: ApiResponse = await res.json();
-
-            if (!res.ok || !data.success) {
-                throw new Error(data.message || `Erreur ${res.status}`);
+            if (!data.success) {
+                throw new Error(data.message || "Impossible de modifier le verrouillage");
             }
 
             toast({
@@ -648,6 +674,7 @@ const GestionPlanComptable = () => {
             setLockDialogOpen(false);
 
         } catch (err: any) {
+            if (err?.status === 401) return handleSessionExpired();
             console.error(err);
             toast({
                 title: "Erreur",
@@ -661,17 +688,12 @@ const GestionPlanComptable = () => {
         if (!compteToDelete || !token) return;
 
         try {
-            const res = await fetch(`${API_URL}/${compteToDelete.id}`, {
-                method: "DELETE",
-                headers: authHeaders()
-            });
+            const data: ApiResponse = await fetchJson(`${API_URL}/${compteToDelete.id}`, {
+                method: "DELETE"
+            }, navigate);
 
-            if (res.status === 401) return handleSessionExpired();
-
-            const data: ApiResponse = await res.json();
-
-            if (!res.ok || !data.success) {
-                throw new Error(data.message || `Erreur ${res.status}`);
+            if (!data.success) {
+                throw new Error(data.message || "Impossible de supprimer le compte");
             }
 
             toast({
@@ -684,6 +706,7 @@ const GestionPlanComptable = () => {
             setCompteToDelete(null);
 
         } catch (err: any) {
+            if (err?.status === 401) return handleSessionExpired();
             console.error(err);
             toast({
                 title: "Erreur",
@@ -851,19 +874,13 @@ const GestionPlanComptable = () => {
 
             for (const compte of comptesNonSync) {
                 try {
-                    const res = await fetch(`${API_URL}/${compte.id}`, {
+                    await fetchJson(`${API_URL}/${compte.id}`, {
                         method: "PUT",
-                        headers: authHeaders(),
                         body: JSON.stringify({
                             devise: societeInfo.deviseParDefaut?.id || null
                         })
-                    });
-
-                    if (res.ok) {
-                        successCount++;
-                    } else {
-                        errorCount++;
-                    }
+                    }, navigate);
+                    successCount++;
                 } catch (err) {
                     errorCount++;
                     console.error(`Erreur sur compte ${compte.id}:`, err);

@@ -54,33 +54,36 @@ export default function Login({ onLogin }: { onLogin?: () => void }) {
                 return;
             }
 
-            // Vérifier la structure des données
-            if (!data.data?.token) {
+            // Vérifier la structure des données (supporte les deux formats)
+            const token = data?.token ?? data?.data?.token;
+            const utilisateur = data?.data?.utilisateur;
+
+            if (!token) {
                 toast.error("Token de connexion manquant");
                 return;
             }
 
-            if (!data.data?.utilisateur) {
+            if (!utilisateur) {
                 toast.error("Données utilisateur manquantes");
                 return;
             }
 
             // Préparer les données pour le stockage
             const userData = {
-                id: data.data.utilisateur.id || 0,
-                username: data.data.utilisateur.username || "",
-                firstName: data.data.utilisateur.firstName || "",
-                lastName: data.data.utilisateur.lastName || "",
-                email: data.data.utilisateur.email || "",
-                statut: data.data.utilisateur.statut || "ACTIF",
-                societe: data.data.utilisateur.societe || null,
-                societeNom: data.data.utilisateur.societeNom || "",
-                roles: Array.isArray(data.data.utilisateur.roles) ? data.data.utilisateur.roles : []
+                id: utilisateur.id || 0,
+                username: utilisateur.username || "",
+                firstName: utilisateur.firstName || "",
+                lastName: utilisateur.lastName || "",
+                email: utilisateur.email || "",
+                statut: utilisateur.statut || "ACTIF",
+                societe: utilisateur.societe || null,
+                societeNom: utilisateur.societeNom || "",
+                roles: Array.isArray(utilisateur.roles) ? utilisateur.roles : []
             };
 
             // Stocker dans localStorage
             try {
-                localStorage.setItem("token", data.data.token);
+                localStorage.setItem("token", token);
                 localStorage.setItem("isAuthenticated", "true");
                 localStorage.setItem("user", JSON.stringify(userData));
             } catch (storageError) {

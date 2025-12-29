@@ -63,7 +63,74 @@ import {
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
-const API_URL = "http://127.0.0.1:8000/api/banques";
+// Allow access to Vite env in this file
+declare global {
+    interface ImportMetaEnv {
+        VITE_API_BASE_URL?: string;
+    }
+    interface ImportMeta {
+        readonly env: ImportMetaEnv;
+    }
+}
+
+const API_BASE_URL = "http://127.0.0.1:8000/api";
+const API_BASE = (import.meta.env as any).VITE_API_BASE_URL ?? API_BASE_URL;
+const api = (path: string) => `${API_BASE}/${path.replace(/^\//, "")}`;
+const API_URL = api("banques");
+
+const getAuthHeaders = (contentType: string | null = "application/json"): HeadersInit => {
+    const token = localStorage.getItem("token");
+    const headers: HeadersInit = {
+        Accept: "application/json",
+    };
+
+    if (contentType) {
+        headers["Content-Type"] = contentType;
+    }
+
+    if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+    }
+
+    return headers;
+};
+
+async function safeJson(res: Response) {
+    const ct = res.headers.get("content-type") || "";
+    if (ct.includes("application/json")) return res.json();
+    const text = await res.text();
+    try {
+        return JSON.parse(text);
+    } catch {
+        return text;
+    }
+}
+
+async function fetchJson(url: string, options: RequestInit = {}, navigate?: any) {
+    const headers = { ...getAuthHeaders(), ...(options.headers || {}) } as HeadersInit;
+    const resp = await fetch(url, { ...options, headers });
+    const data = await safeJson(resp);
+
+    if (resp.status === 401) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        localStorage.setItem("isAuthenticated", "false");
+        if (navigate) navigate("/login");
+        const err: any = new Error("Unauthorized");
+        err.status = 401;
+        err.data = data;
+        throw err;
+    }
+
+    if (!resp.ok) {
+        const err: any = new Error("Request error");
+        err.status = resp.status;
+        err.data = data;
+        throw err;
+    }
+
+    return data;
+}
 
 type Banque = {
     id: number;
@@ -138,8 +205,6 @@ const CreationBanque = () => {
     const [deactivateDialogOpen, setDeactivateDialogOpen] = useState(false);
     const [banqueToToggle, setBanqueToToggle] = useState<Banque | null>(null);
 
-    const token = localStorage.getItem("token") ?? "";
-
     const resetForm = () => {
         setEditingId(null);
         setForm({
@@ -153,23 +218,7 @@ const CreationBanque = () => {
         });
     };
 
-    const authHeaders = (): HeadersInit => ({
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-    });
-
-    const handleUnauthorized = () => {
-        toast({
-            title: "Non autorisé",
-            description: "Veuillez vous reconnecter.",
-            variant: "destructive"
-        });
-        navigate("/login");
-    };
-
     const fetchBanques = async (page = pagination.page, search = searchTerm, statut = statutFilter) => {
-        if (!token) return handleUnauthorized();
-
         setLoading(true);
         try {
             let url = `${API_URL}?page=${page}&limit=${pagination.limit}`;
@@ -177,14 +226,7 @@ const CreationBanque = () => {
             if (statut && statut !== "ALL") url += `&statut=${statut}`;
             if (search) url += `&search=${encodeURIComponent(search)}`;
 
-            const res = await fetch(url, {
-                headers: { Authorization: `Bearer ${token}` }
-            });
-
-            if (res.status === 401) return handleUnauthorized();
-            if (!res.ok) throw new Error(`Erreur ${res.status}`);
-
-            const data = await res.json();
+            const data = await fetchJson(url, {}, navigate);
 
             if (data.success) {
                 setBanques(data.data || []);
@@ -212,14 +254,8 @@ const CreationBanque = () => {
     };
 
     const fetchBanquesActives = async () => {
-        if (!token) return handleUnauthorized();
         try {
-            const res = await fetch(`${API_URL}/actives`, {
-                headers: { Authorization: `Bearer ${token}` }
-            });
-            if (res.status === 401) return handleUnauthorized();
-            if (!res.ok) throw new Error(`Erreur ${res.status}`);
-            const data = await res.json();
+            const data = await fetchJson(api("banques/actives"), {}, navigate);
             return data.success ? data.data : [];
         } catch (err) {
             console.error(err);
@@ -271,9 +307,7 @@ const CreationBanque = () => {
             return;
         }
 
-        if (!token) return handleUnauthorized();
-
-        const url = editingId ? `${API_URL}/${editingId}` : API_URL;
+        const url = editingId ? api(`banques/${editingId}`) : API_URL;
         const method = editingId ? "PUT" : "POST";
 
         const payload = {
@@ -287,30 +321,10 @@ const CreationBanque = () => {
         };
 
         try {
-            const res = await fetch(url, {
+            const data = await fetchJson(url, {
                 method,
-                headers: authHeaders(),
                 body: JSON.stringify(payload)
-            });
-
-            if (res.status === 401) return handleUnauthorized();
-
-            const data = res.headers.get("content-type")?.includes("application/json")
-                ? await res.json()
-                : null;
-
-            if (!res.ok) {
-                const msg = data?.errors
-                    ? (Array.isArray(data.errors)
-                        ? data.errors.join(" • ")
-                        : Object.values(data.errors).flat().join(" • "))
-                    : data?.message || `Erreur ${res.status}`;
-                return toast({
-                    title: "Erreur",
-                    description: msg,
-                    variant: "destructive"
-                });
-            }
+            }, navigate);
 
             toast({
                 title: editingId ? "Banque modifiée" : "Banque créée",
@@ -323,9 +337,14 @@ const CreationBanque = () => {
 
         } catch (err: any) {
             console.error(err);
+            const msg = err?.data?.errors
+                ? (Array.isArray(err.data.errors)
+                    ? err.data.errors.join(" • ")
+                    : Object.values(err.data.errors).flat().join(" • "))
+                : err?.data?.message || err.message || "Impossible d'enregistrer";
             toast({
                 title: "Erreur",
-                description: err.message || "Impossible d'enregistrer",
+                description: msg,
                 variant: "destructive"
             });
         }
@@ -351,28 +370,11 @@ const CreationBanque = () => {
     };
 
     const handleToggleStatus = async (banque: Banque, activate: boolean) => {
-        if (!token) return handleUnauthorized();
-
-        const url = `${API_URL}/${banque.id}/${activate ? 'activate' : 'deactivate'}`;
+        const url = api(`banques/${banque.id}/${activate ? 'activate' : 'deactivate'}`);
         const method = 'PATCH';
 
         try {
-            const res = await fetch(url, {
-                method,
-                headers: authHeaders()
-            });
-
-            if (res.status === 401) return handleUnauthorized();
-
-            const data = await res.json();
-
-            if (!res.ok) {
-                return toast({
-                    title: "Erreur",
-                    description: data?.message || `Erreur ${res.status}`,
-                    variant: "destructive"
-                });
-            }
+            const data = await fetchJson(url, { method }, navigate);
 
             toast({
                 title: activate ? "Banque activée" : "Banque désactivée",
@@ -387,58 +389,17 @@ const CreationBanque = () => {
             console.error(err);
             toast({
                 title: "Erreur",
-                description: err.message || "Impossible de modifier le statut",
+                description: err?.data?.message || err.message || "Impossible de modifier le statut",
                 variant: "destructive"
             });
         }
     };
 
     const handleDelete = async () => {
-        if (!banqueToDelete || !token) return;
+        if (!banqueToDelete) return;
 
         try {
-            const res = await fetch(`${API_URL}/${banqueToDelete.id}`, {
-                method: "DELETE",
-                headers: { Authorization: `Bearer ${token}` }
-            });
-
-            if (res.status === 401) return handleUnauthorized();
-
-            const data = res.headers.get("content-type")?.includes("application/json")
-                ? await res.json()
-                : null;
-
-            if (!res.ok) {
-                const errorMsg = data?.message || data?.errors || `Erreur ${res.status}`;
-
-                if (res.status === 400 && errorMsg.includes("comptes associés")) {
-                    toast({
-                        title: "Banque non supprimable",
-                        description: "La banque ne peut être supprimée car elle a des comptes associés. Voulez-vous la désactiver ?",
-                        variant: "destructive",
-                        action: (
-                            <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => {
-                                    setBanqueToToggle(banqueToDelete);
-                                    setDeactivateDialogOpen(true);
-                                    setDeleteDialogOpen(false);
-                                }}
-                            >
-                                Désactiver
-                            </Button>
-                        )
-                    });
-                    return;
-                }
-
-                return toast({
-                    title: "Erreur",
-                    description: errorMsg,
-                    variant: "destructive"
-                });
-            }
+            const data = await fetchJson(api(`banques/${banqueToDelete.id}`), { method: "DELETE" }, navigate);
 
             toast({
                 title: "Banque supprimée",
@@ -449,11 +410,35 @@ const CreationBanque = () => {
             setDeleteDialogOpen(false);
             setBanqueToDelete(null);
 
-        } catch (err) {
+        } catch (err: any) {
             console.error(err);
+            const errorMsg = err?.data?.message || err?.data?.errors || err.message;
+
+            if (err.status === 400 && errorMsg && errorMsg.includes("comptes associés")) {
+                toast({
+                    title: "Banque non supprimable",
+                    description: "La banque ne peut être supprimée car elle a des comptes associés. Voulez-vous la désactiver ?",
+                    variant: "destructive",
+                    action: (
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                                setBanqueToToggle(banqueToDelete);
+                                setDeactivateDialogOpen(true);
+                                setDeleteDialogOpen(false);
+                            }}
+                        >
+                            Désactiver
+                        </Button>
+                    )
+                });
+                return;
+            }
+
             toast({
                 title: "Erreur",
-                description: "Impossible de supprimer la banque",
+                description: errorMsg || "Impossible de supprimer",
                 variant: "destructive"
             });
         }

@@ -1,5 +1,6 @@
 import MainLayout from "@/components/layout/MainLayout";
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -7,14 +8,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
-    Select,
-    SelectContent,
-    SelectItem,
     SelectTrigger,
     SelectValue,
 } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
-import { Badge } from "@/components/ui/badge";
 import {
     Table,
     TableBody,
@@ -26,26 +22,18 @@ import {
 import {
     Dialog,
     DialogContent,
-    DialogDescription,
     DialogHeader,
     DialogTitle,
+    DialogDescription,
     DialogFooter,
 } from "@/components/ui/dialog";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import {
-    Pagination,
-    PaginationContent,
-    PaginationItem,
-    PaginationLink,
-    PaginationNext,
-    PaginationPrevious,
-} from "@/components/ui/pagination";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Pagination, PaginationContent, PaginationItem, PaginationPrevious, PaginationNext, PaginationLink } from "@/components/ui/pagination";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Switch } from "@/components/ui/switch";
 import {
-    Plus,
-    Save,
-    Edit,
     Trash2,
     Lock,
     Unlock,
@@ -65,7 +53,78 @@ import {
     Shield,
     Briefcase,
     Globe,
+    Edit,
+    Plus,
+    Save,
 } from "lucide-react";
+
+import { Select, SelectContent, SelectItem } from "@/components/ui/select";
+
+// Allow access to Vite env in this file
+declare global {
+    interface ImportMetaEnv {
+        VITE_API_BASE_URL?: string;
+    }
+    interface ImportMeta {
+        readonly env: ImportMetaEnv;
+    }
+}
+
+const API_BASE = (import.meta.env as any).VITE_API_BASE_URL ?? "http://127.0.0.1:8000/api";
+const api = (path: string) => `${API_BASE}/${path.replace(/^\//, "")}`;
+
+const getAuthHeaders = (contentType: string | null = "application/json"): HeadersInit => {
+    const token = localStorage.getItem("token");
+    const headers: HeadersInit = {
+        Accept: "application/json",
+    };
+
+    if (contentType) {
+        headers["Content-Type"] = contentType;
+    }
+
+    if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+    }
+    return headers;
+}
+
+async function safeJson(res: Response) {
+    const ct = res.headers.get("content-type") || "";
+    if (ct.includes("application/json")) return res.json();
+    const text = await res.text();
+    try {
+        return JSON.parse(text);
+    } catch {
+        return text;
+    }
+}
+
+async function fetchJson(url: string, options: RequestInit = {}, navigate?: any) {
+    const headers = { ...getAuthHeaders(), ...(options.headers || {}) } as HeadersInit;
+    const resp = await fetch(url, { ...options, headers });
+    const data = await safeJson(resp);
+
+    if (resp.status === 401) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        localStorage.setItem("isAuthenticated", "false");
+        if (navigate) navigate("/login");
+        const err: any = new Error("Unauthorized");
+        err.status = 401;
+        err.data = data;
+        throw err;
+    }
+
+    if (!resp.ok) {
+        const err: any = new Error("Request error");
+        err.status = resp.status;
+        err.data = data;
+        throw err;
+    }
+
+    return data;
+}
 
 // Types
 interface PlanComptable {
@@ -130,8 +189,6 @@ interface PaginationData {
     limit: number;
     pages: number;
 }
-
-const API_BASE_URL = "http://127.0.0.1:8000/api";
 
 // Constantes pour les types de tiers
 const TYPES_TIERS = {
@@ -206,6 +263,7 @@ const getUtilisateurName = (user?: Utilisateur | string): string => {
 
 const TiersPage = () => {
     const { toast } = useToast();
+    const navigate = useNavigate();
     const [tiers, setTiers] = useState<Tiers[]>([]);
     const [societes, setSocietes] = useState<Societe[]>([]);
     const [loading, setLoading] = useState(true);
@@ -262,25 +320,6 @@ const TiersPage = () => {
         estVerrouille: false,
         notes: "",
     });
-
-    // Fonction utilitaire pour les headers
-    const getAuthHeaders = (): HeadersInit => {
-        const token = localStorage.getItem("auth_token") ||
-            localStorage.getItem("token") ||
-            sessionStorage.getItem("auth_token") ||
-            sessionStorage.getItem("token");
-
-        const headers: HeadersInit = {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        };
-
-        if (token) {
-            headers["Authorization"] = `Bearer ${token}`;
-        }
-
-        return headers;
-    };
 
     // Types de tiers disponibles
     const typesTiersOptions = Object.entries(TYPES_TIERS).map(([value, label]) => ({
@@ -348,8 +387,6 @@ const TiersPage = () => {
             setLoading(true);
             setError(null);
 
-            const headers = getAuthHeaders();
-
             const params = new URLSearchParams({
                 page: pagination.page.toString(),
                 limit: pagination.limit.toString(),
@@ -360,33 +397,15 @@ const TiersPage = () => {
             if (filterStatut !== 'all') params.append('statut', filterStatut);
             if (filterVerrouille !== 'all') params.append('estVerrouille', filterVerrouille);
 
-            const url = `${API_BASE_URL}/tiers?${params.toString()}`;
+            const url = api(`tiers?${params.toString()}`);
+            const data = await fetchJson(url, {}, navigate);
 
-            const response = await fetch(url, { headers });
-
-            if (response.status === 401) {
-                setError("Non authentifié. Veuillez vous connecter.");
-                toast({
-                    title: "Session expirée",
-                    description: "Veuillez vous reconnecter",
-                    variant: "destructive",
-                });
-                setLoading(false);
-                return;
-            }
-
-            if (!response.ok) {
-                throw new Error(`Erreur ${response.status} lors du chargement des tiers`);
-            }
-
-            const data = await response.json();
-
-            if (data.success) {
+            if (data && data.success) {
                 const tiersWithPermissions = updateTiersWithPermissions(data.data || []);
                 setTiers(tiersWithPermissions);
                 setPagination(data.pagination || pagination);
             } else {
-                throw new Error(data.error || "Erreur inconnue");
+                throw new Error((data && data.error) || "Erreur inconnue");
             }
 
         } catch (error) {
@@ -404,14 +423,9 @@ const TiersPage = () => {
 
     const fetchSocietes = async () => {
         try {
-            const headers = getAuthHeaders();
-            const response = await fetch(`${API_BASE_URL}/societes`, { headers });
-
-            if (response.ok) {
-                const data = await response.json();
-                if (data.success) {
-                    setSocietes(data.data || []);
-                }
+            const data = await fetchJson(api("societes"), {}, navigate);
+            if (data && data.success) {
+                setSocietes(data.data || []);
             }
         } catch (error) {
             // Log silencieux
@@ -420,14 +434,9 @@ const TiersPage = () => {
 
     const fetchCompatibleAccounts = async (typeTiers: string) => {
         try {
-            const headers = getAuthHeaders();
-            const response = await fetch(`${API_BASE_URL}/tiers/comptes-compatibles/${typeTiers}`, { headers });
-
-            if (response.ok) {
-                const data = await response.json();
-                if (data.success) {
-                    setCompatibleComptes(data.data || []);
-                }
+            const data = await fetchJson(api(`tiers/comptes-compatibles/${typeTiers}`), {}, navigate);
+            if (data && data.success) {
+                setCompatibleComptes(data.data || []);
             }
         } catch (error) {
             setCompatibleComptes([]);
@@ -487,13 +496,10 @@ const TiersPage = () => {
 
     const checkCodeAvailability = async (code: string, excludeId?: number): Promise<boolean> => {
         try {
-            const headers = getAuthHeaders();
             const params = new URLSearchParams({ code });
             if (excludeId) params.append('excludeId', excludeId.toString());
 
-            const response = await fetch(`${API_BASE_URL}/tiers/check-code?${params.toString()}`, { headers });
-            const data = await response.json();
-
+            const data = await fetchJson(api(`tiers/check-code?${params.toString()}`), {}, navigate);
             return data.success ? !data.available : true;
         } catch (error) {
             return true;
@@ -530,8 +536,8 @@ const TiersPage = () => {
 
         try {
             const url = editMode && formData.id
-                ? `${API_BASE_URL}/tiers/${formData.id}`
-                : `${API_BASE_URL}/tiers`;
+                ? api(`tiers/${formData.id}`)
+                : api(`tiers`);
 
             const method = editMode ? "PUT" : "POST";
 
@@ -558,28 +564,7 @@ const TiersPage = () => {
                 requestData.societeId = societes[0].id;
             }
 
-            const response = await fetch(url, {
-                method,
-                headers: getAuthHeaders(),
-                body: JSON.stringify(requestData),
-            });
-
-            const responseData = await response.json();
-
-            if (!response.ok) {
-                if (response.status === 400 && responseData.validation_errors) {
-                    Object.entries(responseData.validation_errors).forEach(([field, message]) => {
-                        toast({
-                            title: "Erreur de validation",
-                            description: `${field}: ${message}`,
-                            variant: "destructive",
-                        });
-                    });
-                } else {
-                    throw new Error(responseData.error || `Erreur ${response.status}`);
-                }
-                return;
-            }
+            const responseData = await fetchJson(url, { method, body: JSON.stringify(requestData) }, navigate);
 
             toast({
                 title: "Succès",
@@ -589,15 +574,25 @@ const TiersPage = () => {
             resetForm();
             fetchData();
 
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : "Erreur inconnue";
-            setError(errorMessage);
-
-            toast({
-                title: "Erreur",
-                description: "Une erreur est survenue lors de l'enregistrement",
-                variant: "destructive",
-            });
+        } catch (error: any) {
+            console.error('Erreur enregistrement tiers:', error);
+            if (error?.status === 400 && error?.data?.validation_errors) {
+                Object.entries(error.data.validation_errors).forEach(([field, message]) => {
+                    toast({
+                        title: "Erreur de validation",
+                        description: `${field}: ${message}`,
+                        variant: "destructive",
+                    });
+                });
+            } else {
+                const errorMessage = error?.data?.message || error?.message || "Erreur inconnue";
+                setError(errorMessage);
+                toast({
+                    title: "Erreur",
+                    description: "Une erreur est survenue lors de l'enregistrement",
+                    variant: "destructive",
+                });
+            }
         } finally {
             setSubmitting(false);
         }
@@ -637,16 +632,7 @@ const TiersPage = () => {
         }
 
         try {
-            const response = await fetch(`${API_BASE_URL}/tiers/${id}`, {
-                method: "DELETE",
-                headers: getAuthHeaders(),
-            });
-
-            const data = await response.json();
-
-            if (!response.ok) {
-                throw new Error(data.error || "Erreur lors de la suppression");
-            }
+            const data = await fetchJson(api(`tiers/${id}`), { method: "DELETE" }, navigate);
 
             toast({
                 title: "Succès",
@@ -654,10 +640,10 @@ const TiersPage = () => {
             });
 
             fetchData();
-        } catch (error) {
+        } catch (error: any) {
             toast({
                 title: "Erreur",
-                description: "Erreur lors de la suppression",
+                description: error?.data?.message || error?.message || "Erreur lors de la suppression",
                 variant: "destructive",
             });
         }
@@ -665,17 +651,7 @@ const TiersPage = () => {
 
     const handleActiver = async (id: number) => {
         try {
-            const response = await fetch(`${API_BASE_URL}/tiers/${id}/activer`, {
-                method: "POST",
-                headers: getAuthHeaders(),
-                body: JSON.stringify({}),
-            });
-
-            const data = await response.json();
-
-            if (!response.ok) {
-                throw new Error(data.error || "Erreur lors de l'activation");
-            }
+            const data = await fetchJson(api(`tiers/${id}/activer`), { method: "POST", body: JSON.stringify({}) }, navigate);
 
             toast({
                 title: "Succès",
@@ -698,10 +674,10 @@ const TiersPage = () => {
 
             await fetchData();
 
-        } catch (error) {
+        } catch (error: any) {
             toast({
                 title: "Erreur",
-                description: "Erreur lors de l'activation",
+                description: error?.data?.message || error?.message || "Erreur lors de l'activation",
                 variant: "destructive",
             });
         }
@@ -709,17 +685,7 @@ const TiersPage = () => {
 
     const handleDesactiver = async (id: number) => {
         try {
-            const response = await fetch(`${API_BASE_URL}/tiers/${id}/desactiver`, {
-                method: "POST",
-                headers: getAuthHeaders(),
-                body: JSON.stringify({}),
-            });
-
-            const data = await response.json();
-
-            if (!response.ok) {
-                throw new Error(data.error || "Erreur lors de la désactivation");
-            }
+            const data = await fetchJson(api(`tiers/${id}/desactiver`), { method: "POST", body: JSON.stringify({}) }, navigate);
 
             toast({
                 title: "Succès",
@@ -742,10 +708,10 @@ const TiersPage = () => {
 
             await fetchData();
 
-        } catch (error) {
+        } catch (error: any) {
             toast({
                 title: "Erreur",
-                description: "Erreur lors de la désactivation",
+                description: error?.data?.message || error?.message || "Erreur lors de la désactivation",
                 variant: "destructive",
             });
         }
@@ -753,17 +719,7 @@ const TiersPage = () => {
 
     const handleVerrouiller = async (id: number) => {
         try {
-            const response = await fetch(`${API_BASE_URL}/tiers/${id}/verrouiller`, {
-                method: "POST",
-                headers: getAuthHeaders(),
-                body: JSON.stringify({}),
-            });
-
-            const data = await response.json();
-
-            if (!response.ok) {
-                throw new Error(data.error || "Erreur lors du verrouillage");
-            }
+            const data = await fetchJson(api(`tiers/${id}/verrouiller`), { method: "POST", body: JSON.stringify({}) }, navigate);
 
             toast({
                 title: "Succès",
@@ -781,10 +737,10 @@ const TiersPage = () => {
             );
 
             fetchData();
-        } catch (error) {
+        } catch (error: any) {
             toast({
                 title: "Erreur",
-                description: "Erreur lors du verrouillage",
+                description: error?.data?.message || error?.message || "Erreur lors du verrouillage",
                 variant: "destructive",
             });
         }
@@ -792,17 +748,7 @@ const TiersPage = () => {
 
     const handleDeverrouiller = async (id: number) => {
         try {
-            const response = await fetch(`${API_BASE_URL}/tiers/${id}/deverrouiller`, {
-                method: "POST",
-                headers: getAuthHeaders(),
-                body: JSON.stringify({}),
-            });
-
-            const data = await response.json();
-
-            if (!response.ok) {
-                throw new Error(data.error || "Erreur lors du déverrouillage");
-            }
+            const data = await fetchJson(api(`tiers/${id}/deverrouiller`), { method: "POST", body: JSON.stringify({}) }, navigate);
 
             toast({
                 title: "Succès",
@@ -820,10 +766,10 @@ const TiersPage = () => {
             );
 
             fetchData();
-        } catch (error) {
+        } catch (error: any) {
             toast({
                 title: "Erreur",
-                description: "Erreur lors du déverrouillage",
+                description: error?.data?.message || error?.message || "Erreur lors du déverrouillage",
                 variant: "destructive",
             });
         }
@@ -856,7 +802,7 @@ const TiersPage = () => {
 
     const handleExportCsv = async () => {
         try {
-            const response = await fetch(`${API_BASE_URL}/tiers/export/csv`, {
+            const response = await fetch(api('tiers/export/csv'), {
                 headers: getAuthHeaders(),
             });
 

@@ -20,6 +20,68 @@ import { useToast } from "@/hooks/use-toast";
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 
+// Allow access to Vite env in this file
+declare global {
+    interface ImportMetaEnv {
+        VITE_API_BASE_URL?: string;
+    }
+    interface ImportMeta {
+        readonly env: ImportMetaEnv;
+    }
+}
+
+const API_BASE_URL = "http://127.0.0.1:8000/api";
+const API_BASE = (import.meta.env as any).VITE_API_BASE_URL ?? API_BASE_URL;
+const api = (path: string) => `${API_BASE}/${path.replace(/^\//, "")}`;
+
+const getAuthHeaders = (contentType: string | null = "application/json"): HeadersInit => {
+    const token = localStorage.getItem("token");
+    const headers: HeadersInit = { Accept: "application/json" };
+
+    if (contentType) {
+        headers["Content-Type"] = contentType;
+    }
+
+    if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+    }
+
+    return headers;
+};
+
+async function safeJson(res: Response) {
+    const ct = res.headers.get("content-type") || "";
+    if (ct.includes("application/json")) return res.json();
+    const text = await res.text();
+    try { return JSON.parse(text); } catch { return text; }
+}
+
+async function fetchJson(url: string, options: RequestInit = {}, navigate?: any) {
+    const headers = { ...getAuthHeaders(), ...(options.headers || {}) } as HeadersInit;
+    const resp = await fetch(url, { ...options, headers });
+    const data = await safeJson(resp);
+
+    if (resp.status === 401) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        localStorage.setItem("isAuthenticated", "false");
+        if (navigate) navigate("/login");
+        const err: any = new Error("Unauthorized");
+        err.status = 401;
+        err.data = data;
+        throw err;
+    }
+
+    if (!resp.ok) {
+        const err: any = new Error("Request error");
+        err.status = resp.status;
+        err.data = data;
+        throw err;
+    }
+
+    return data;
+}
+
 // Interface alignée avec l'Entity Symfony exactement
 interface SocieteFormData {
     id?: number;
@@ -124,25 +186,20 @@ const CreationSociete = () => {
                     return;
                 }
 
-                const response = await fetch("http://127.0.0.1:8000/api/devises", {
-                    headers: {
-                        "Authorization": `Bearer ${token}`,
-                        "Accept": "application/json"
-                    }
-                });
-
-                if (response.ok) {
-                    const data = await response.json();
-                    // Gérer les deux formats de réponse possibles
-                    if (Array.isArray(data)) {
-                        setDevises(data);
-                    } else if (data.data && Array.isArray(data.data)) {
-                        setDevises(data.data);
-                    }
-                } else {
-                    console.error("Erreur API devises:", response.status);
+                const data = await fetchJson(api("/devises"), {}, navigate);
+                const devisesPayload = Array.isArray((data as any)?.data) ? (data as any).data : data;
+                if (Array.isArray(devisesPayload)) {
+                    setDevises(devisesPayload as Devise[]);
                 }
-            } catch (error) {
+            } catch (error: any) {
+                if (error?.status === 401) {
+                    toast({
+                        title: "Non autorisé",
+                        description: "Veuillez vous reconnecter",
+                        variant: "destructive"
+                    });
+                    return;
+                }
                 console.error("Erreur chargement devises:", error);
             }
         };
@@ -169,27 +226,20 @@ const CreationSociete = () => {
                 return;
             }
 
-            const response = await fetch("http://127.0.0.1:8000/api/societes", {
-                headers: {
-                    "Authorization": `Bearer ${token}`,
-                    "Accept": "application/json"
-                }
-            });
-
-            if (response.ok) {
-                const data = await response.json();
-                if (data.data && Array.isArray(data.data)) {
-                    setSocietes(data.data);
-                }
-            } else {
+            const data = await fetchJson(api("/societes"), {}, navigate);
+            const payload = Array.isArray((data as any)?.data) ? (data as any).data : data;
+            if (Array.isArray(payload)) {
+                setSocietes(payload as Societe[]);
+            }
+        } catch (error: any) {
+            if (error?.status === 401) {
                 toast({
-                    title: "Erreur",
-                    description: "Impossible de charger la liste des sociétés",
+                    title: "Non autorisé",
+                    description: "Veuillez vous reconnecter",
                     variant: "destructive"
                 });
-                setSocietes([]);
+                return;
             }
-        } catch (error) {
             console.error("Erreur chargement sociétés:", error);
             toast({
                 title: "Erreur",
@@ -216,41 +266,37 @@ const CreationSociete = () => {
                 return;
             }
 
-            const response = await fetch(`http://127.0.0.1:8000/api/societes/${id}`, {
-                headers: {
-                    "Authorization": `Bearer ${token}`,
-                    "Accept": "application/json"
-                }
+            const data = await fetchJson(api(`/societes/${id}`), {}, navigate);
+            const societeData = (data as any).data || data;
+
+            setForm({
+                id: societeData.id,
+                raisonSociale: societeData.raisonSociale || "",
+                forme: societeData.forme || "",
+                activites: societeData.activites || "",
+                registreCommerce: societeData.registreCommerce || "",
+                compteContribuable: societeData.compteContribuable || "",
+                telephone: societeData.telephone || "",
+                anneeDebutActivite: societeData.anneeDebutActivite || undefined,
+                adresse: societeData.adresse || "",
+                siegeSocial: societeData.siegeSocial || "",
+                capitalSocial: societeData.capitalSocial || "",
+                gerant: societeData.gerant || "",
+                deviseParDefaut: societeData.deviseParDefaut?.id?.toString() || "",
+                emailContact: societeData.emailContact || "",
+                statut: societeData.statut || "ACTIF"
             });
 
-            if (response.ok) {
-                const data = await response.json();
-                const societeData = data.data || data;
-
-                // Mise à jour alignée avec l'Entity
-                setForm({
-                    id: societeData.id,
-                    raisonSociale: societeData.raisonSociale || "",
-                    forme: societeData.forme || "",
-                    activites: societeData.activites || "",
-                    registreCommerce: societeData.registreCommerce || "",
-                    compteContribuable: societeData.compteContribuable || "",
-                    telephone: societeData.telephone || "",
-                    anneeDebutActivite: societeData.anneeDebutActivite || undefined,
-                    adresse: societeData.adresse || "",
-                    siegeSocial: societeData.siegeSocial || "",
-                    capitalSocial: societeData.capitalSocial || "",
-                    gerant: societeData.gerant || "",
-                    deviseParDefaut: societeData.deviseParDefaut?.id?.toString() || "",
-                    emailContact: societeData.emailContact || "",
-                    statut: societeData.statut || "ACTIF"
-                });
-
-                setSelectedSocieteId(id);
-            } else {
-                throw new Error("Impossible de charger les détails de la société");
-            }
+            setSelectedSocieteId(id);
         } catch (error: any) {
+            if (error?.status === 401) {
+                toast({
+                    title: "Non autorisé",
+                    description: "Veuillez vous reconnecter",
+                    variant: "destructive"
+                });
+                return;
+            }
             console.error("Erreur chargement société:", error);
             toast({
                 title: "Erreur",
@@ -267,8 +313,10 @@ const CreationSociete = () => {
 
         // Conversion pour les champs numériques
         if (id === 'anneeDebutActivite') {
-            const numValue = value === '' ? undefined : parseInt(value);
-            if (numValue === undefined || (!isNaN(numValue) && numValue >= 1900 && numValue <= 2100)) {
+            // Allow progressive typing (up to 4 digits) and empty value.
+            // Final range validation (1900-2100) is performed on submit.
+            if (value === '' || /^[0-9]{1,4}$/.test(value)) {
+                const numValue = value === '' ? undefined : parseInt(value, 10);
                 setForm(prev => ({
                     ...prev,
                     [id]: numValue
@@ -374,35 +422,15 @@ const CreationSociete = () => {
             });
 
             const url = mode === 'edit' && form.id
-                ? `http://127.0.0.1:8000/api/societes/${form.id}`
-                : "http://127.0.0.1:8000/api/societes";
+                ? api(`/societes/${form.id}`)
+                : api("/societes");
 
             const method = mode === 'edit' ? 'PUT' : 'POST';
 
-            const response = await fetch(url, {
+            const responseData = await fetchJson(url, {
                 method,
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${token}`,
-                    "Accept": "application/json"
-                },
                 body: JSON.stringify(dataToSend)
-            });
-
-            const responseData = await response.json();
-
-            if (!response.ok) {
-                // Gérer les erreurs de validation Symfony
-                if (response.status === 400 && responseData.errors) {
-                    const errorMessages = responseData.errors
-                        .map((err: any) => `${err.field}: ${err.message}`)
-                        .join('\n');
-                    throw new Error(`Erreurs de validation:\n${errorMessages}`);
-                }
-
-                const errorMsg = responseData?.message || `Erreur ${response.status}`;
-                throw new Error(errorMsg);
-            }
+            }, navigate);
 
             toast({
                 title: "Succès",
@@ -417,10 +445,25 @@ const CreationSociete = () => {
             resetForm();
 
         } catch (error: any) {
+            if (error?.status === 401) {
+                toast({
+                    title: "Non autorisé",
+                    description: "Veuillez vous reconnecter",
+                    variant: "destructive"
+                });
+                return;
+            }
+
+            let message = error?.message || "Une erreur est survenue";
+            const validationErrors = error?.data?.errors;
+            if (Array.isArray(validationErrors)) {
+                message = validationErrors.map((err: any) => `${err.field}: ${err.message}`).join("\n");
+            }
+
             console.error("Erreur:", error);
             toast({
                 title: "Erreur",
-                description: error.message || "Une erreur est survenue",
+                description: message,
                 variant: "destructive"
             });
         } finally {
@@ -478,45 +521,36 @@ const CreationSociete = () => {
             }
 
             // D'abord vérifier si la société peut être supprimée
-            const checkResponse = await fetch(`http://127.0.0.1:8000/api/societes/${id}/check-deletion`, {
-                headers: {
-                    "Authorization": `Bearer ${token}`,
-                    "Accept": "application/json"
-                }
-            });
-
-            if (checkResponse.ok) {
-                const checkData = await checkResponse.json();
-                if (!checkData.data.canDelete) {
-                    toast({
-                        title: "Impossible de supprimer",
-                        description: "La société a des données associées (comptes, exercices, opérations)",
-                        variant: "destructive"
-                    });
-                    return;
-                }
+            const checkData = await fetchJson(api(`/societes/${id}/check-deletion`), {}, navigate);
+            const canDelete = (checkData as any)?.data?.canDelete ?? (checkData as any)?.canDelete;
+            if (canDelete === false) {
+                toast({
+                    title: "Impossible de supprimer",
+                    description: "La société a des données associées (comptes, exercices, opérations)",
+                    variant: "destructive"
+                });
+                return;
             }
 
             // Si ok, procéder à la suppression
-            const response = await fetch(`http://127.0.0.1:8000/api/societes/${id}`, {
-                method: 'DELETE',
-                headers: {
-                    "Authorization": `Bearer ${token}`,
-                    "Accept": "application/json"
-                }
-            });
+            await fetchJson(api(`/societes/${id}`), {
+                method: 'DELETE'
+            }, navigate);
 
-            if (response.ok) {
-                toast({
-                    title: "Succès",
-                    description: "Société supprimée avec succès"
-                });
-                await fetchSocietes();
-            } else {
-                const errorData = await response.json();
-                throw new Error(errorData.message || "Erreur lors de la suppression");
-            }
+            toast({
+                title: "Succès",
+                description: "Société supprimée avec succès"
+            });
+            await fetchSocietes();
         } catch (error: any) {
+            if (error?.status === 401) {
+                toast({
+                    title: "Non autorisé",
+                    description: "Veuillez vous reconnecter",
+                    variant: "destructive"
+                });
+                return;
+            }
             toast({
                 title: "Erreur",
                 description: error.message || "Erreur lors de la suppression",
@@ -891,10 +925,14 @@ const CreationSociete = () => {
                                         <Input
                                             id="anneeDebutActivite"
                                             type="number"
+                                            inputMode="numeric"
+                                            pattern="[0-9]*"
+                                            step="1"
                                             min="1900"
                                             max="2100"
-                                            value={form.anneeDebutActivite || ''}
+                                            value={form.anneeDebutActivite ?? ''}
                                             onChange={handleChange}
+                                            onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
                                             placeholder="2024"
                                             disabled={loading || mode === 'view'}
                                         />

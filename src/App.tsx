@@ -22,6 +22,7 @@ import ChargesSocialesPage from "@/pages/parametres/ChargeSocialePage";
 import FeuilleEncaissementPage from "@/pages/encaissements/FeuilleEncaissementPage";
 import OrdrePaiement from "@/pages/decaissements/OrdrePaiement";
 import FacturePage from "@/pages/FacturePage";
+import BordereauRemiseCheque from "./pages/encaissements/BordereauRemiseCheque";
 
 const queryClient = new QueryClient();
 
@@ -192,6 +193,15 @@ const App = () => (
                             </ProtectedRoute>
                         }
                     />
+                    <Route
+                        path="/encaissements/bordereau-cheques"
+                        element={
+                            <ProtectedRoute allowedRoles={["ROLE_ADMINISTRATEUR", "ROLE_SUPER_ADMIN", "ROLE_COMPTABLE", "ROLE_CAISSIER"]}>
+                                <BordereauRemiseCheque />
+                            </ProtectedRoute>
+                        }
+                    />
+                    
 
                     {/* 🆕 Ordre de paiement - accès admin + super admin + comptable + agent */}
                     <Route

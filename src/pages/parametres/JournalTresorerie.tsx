@@ -48,6 +48,8 @@ import {
     EyeOff,
 } from "lucide-react";
 
+import MainLayout from "@/components/layout/MainLayout";
+
 // Types
 interface PlanComptable {
     id: number;
@@ -91,24 +93,64 @@ interface JournalTresorerie {
 }
 
 const API_BASE_URL = "http://127.0.0.1:8000/api";
+const API_BASE = (import.meta as any)?.env?.VITE_API_BASE_URL ?? API_BASE_URL;
+const api = (path: string) => `${API_BASE}/${path.replace(/^\//, "")}`;
 
 // Fonction utilitaire pour les headers
-const getAuthHeaders = (): HeadersInit => {
+const getAuthHeaders = (contentType: string | null = "application/json"): HeadersInit => {
     const token = localStorage.getItem("auth_token") ||
         localStorage.getItem("token") ||
         sessionStorage.getItem("auth_token") ||
         sessionStorage.getItem("token");
 
     const headers: HeadersInit = {
-        "Content-Type": "application/json",
         "Accept": "application/json",
     };
+
+    if (contentType) {
+        headers["Content-Type"] = contentType;
+    }
 
     if (token) {
         headers["Authorization"] = `Bearer ${token}`;
     }
 
     return headers;
+};
+
+const safeJson = async (res: Response) => {
+    const ct = res.headers.get("content-type") || "";
+    if (ct.includes("application/json")) return res.json();
+    const text = await res.text();
+    try { return JSON.parse(text); } catch { return text; }
+};
+
+const fetchJson = async (url: string, options: RequestInit = {}, navigate?: any) => {
+    const headers = { ...getAuthHeaders(), ...(options.headers || {}) } as HeadersInit;
+    const resp = await fetch(url, { ...options, headers });
+    const data = await safeJson(resp);
+    if (resp.status === 401) {
+        try {
+            localStorage.removeItem("token");
+            localStorage.removeItem("auth_token");
+            localStorage.removeItem("user");
+            localStorage.setItem("isAuthenticated", "false");
+        } catch (e) {
+            // ignore storage errors
+        }
+        if (navigate) navigate('/login');
+        const err: any = new Error('Unauthorized');
+        err.status = 401;
+        err.data = data;
+        throw err;
+    }
+    if (!resp.ok) {
+        const err: any = new Error('Request error');
+        err.status = resp.status;
+        err.data = data;
+        throw err;
+    }
+    return data;
 };
 
 const JournalTresorerie = () => {
@@ -177,53 +219,17 @@ const JournalTresorerie = () => {
             setLoading(true);
             setError(null);
 
-            const headers = getAuthHeaders();
-
             // 1. Charger les journaux
-            const journauxResponse = await fetch(`${API_BASE_URL}/journaux-tresorerie`, {
-                headers,
-            });
-
-            if (journauxResponse.status === 401) {
-                setError("Non authentifié. Veuillez vous connecter.");
-                toast({
-                    title: "Session expirée",
-                    description: "Veuillez vous reconnecter",
-                    variant: "destructive",
-                });
-                setLoading(false);
-                return;
-            }
-
-            if (!journauxResponse.ok) {
-                const errorData = await journauxResponse.json();
-                throw new Error(errorData.error || `Erreur ${journauxResponse.status} lors du chargement des journaux`);
-            }
-
-            const journauxData = await journauxResponse.json();
+                const journauxData = await fetchJson(api('/journaux-tresorerie')); 
             setJournaux(journauxData.data || []);
 
             // 2. Charger les plans comptables
             try {
-                const pcResponse = await fetch(`${API_BASE_URL}/plan-comptables/actifs`, {
-                    headers,
-                });
-
-                if (pcResponse.ok) {
-                    const pcData = await pcResponse.json();
-                    if (pcData.data) {
-                        setPlanComptables(pcData.data);
-                    } else if (Array.isArray(pcData)) {
-                        setPlanComptables(pcData);
-                    } else {
-                        await loadPlanComptablesFallback(headers);
-                    }
-                } else {
-                    await loadPlanComptablesFallback(headers);
-                }
+                    const planComptableData = await fetchJson(api('/plan-comptables/actifs'));
+                    setPlanComptables(planComptableData.data || planComptableData);
             } catch (pcError) {
                 console.warn("Erreur lors du chargement des plans comptables:", pcError);
-                await loadPlanComptablesFallback(headers);
+                await loadPlanComptablesFallback();
             }
 
         } catch (error) {
@@ -241,24 +247,10 @@ const JournalTresorerie = () => {
     };
 
     // Fallback pour charger les plans comptables
-    const loadPlanComptablesFallback = async (headers: HeadersInit) => {
+    const loadPlanComptablesFallback = async () => {
         try {
-            const fallbackResponse = await fetch(`${API_BASE_URL}/plan-comptables`, {
-                headers,
-            });
-
-            if (fallbackResponse.ok) {
-                const fallbackData = await fallbackResponse.json();
-                if (fallbackData.data) {
-                    setPlanComptables(fallbackData.data);
-                } else if (Array.isArray(fallbackData)) {
-                    setPlanComptables(fallbackData);
-                } else {
-                    setPlanComptables([]);
-                }
-            } else {
-                setPlanComptables([]);
-            }
+                const fallbackData = await fetchJson(api('/plan-comptables'));
+                setPlanComptables(fallbackData.data || fallbackData);
         } catch (error) {
             setPlanComptables([]);
         }
@@ -306,20 +298,13 @@ const JournalTresorerie = () => {
     // Vérifier si le code est unique
     const checkCodeUnique = async (code: string, excludeId?: number): Promise<boolean> => {
         try {
-            let url = `${API_BASE_URL}/journaux-tresorerie/validation/code/${code}`;
+            let url = api(`/journaux-tresorerie/validation/code/${code}`);
             if (excludeId) {
                 url += `?excludeId=${excludeId}`;
             }
 
-            const response = await fetch(url, {
-                headers: getAuthHeaders(),
-            });
-
-            if (response.ok) {
-                const data = await response.json();
-                return data.isUnique;
-            }
-            return false;
+            const data = await fetchJson(url);
+            return Boolean((data as any)?.isUnique ?? true);
         } catch (error) {
             console.error("Erreur lors de la vérification du code:", error);
             return false;
@@ -357,8 +342,8 @@ const JournalTresorerie = () => {
 
         try {
             const url = editMode && formData.id
-                ? `${API_BASE_URL}/journaux-tresorerie/${formData.id}`
-                : `${API_BASE_URL}/journaux-tresorerie`;
+                ? api(`/journaux-tresorerie/${formData.id}`)
+                : api('/journaux-tresorerie');
 
             const method = editMode ? "PUT" : "POST";
 
@@ -372,32 +357,16 @@ const JournalTresorerie = () => {
                 estVerrouille: formData.estVerrouille,
             };
 
-            const response = await fetch(url, {
-                method,
-                headers: getAuthHeaders(),
-                body: JSON.stringify(requestData),
-            });
+            const responseData = await fetchJson(url, { method, body: JSON.stringify(requestData) });
 
-            const responseData = await response.json();
-
-            if (!response.ok) {
-                if (response.status === 400) {
-                    if (responseData.errors) {
-                        Object.entries(responseData.errors).forEach(([field, message]) => {
-                            toast({
-                                title: "Erreur de validation",
-                                description: `${field}: ${message}`,
-                                variant: "destructive",
-                            });
-                        });
-                    } else if (responseData.error) {
-                        throw new Error(responseData.error);
-                    }
-                } else if (response.status === 409) {
-                    throw new Error(responseData.message || "Conflit de données");
-                } else {
-                    throw new Error(responseData.message || `Erreur ${response.status}`);
-                }
+            if ((responseData as any)?.errors) {
+                Object.entries((responseData as any).errors).forEach(([field, message]) => {
+                    toast({
+                        title: "Erreur de validation",
+                        description: `${field}: ${message}`,
+                        variant: "destructive",
+                    });
+                });
                 return;
             }
 
@@ -451,16 +420,7 @@ const JournalTresorerie = () => {
         }
 
         try {
-            const response = await fetch(`${API_BASE_URL}/journaux-tresorerie/${id}`, {
-                method: "DELETE",
-                headers: getAuthHeaders(),
-            });
-
-            const data = await response.json();
-
-            if (!response.ok) {
-                throw new Error(data.error || data.message || "Erreur lors de la suppression");
-            }
+            const data = await fetchJson(api(`/journaux-tresorerie/${id}`), { method: "DELETE" });
 
             toast({
                 title: "Succès",
@@ -483,16 +443,7 @@ const JournalTresorerie = () => {
         }
 
         try {
-            const response = await fetch(`${API_BASE_URL}/journaux-tresorerie/${id}/desactiver`, {
-                method: "PUT",
-                headers: getAuthHeaders(),
-            });
-
-            const data = await response.json();
-
-            if (!response.ok) {
-                throw new Error(data.error || data.message || "Erreur lors de la désactivation");
-            }
+            const data = await fetchJson(api(`/journaux-tresorerie/${id}/desactiver`), { method: "PUT" });
 
             toast({
                 title: "Succès",
@@ -511,16 +462,7 @@ const JournalTresorerie = () => {
 
     const handleReactiver = async (id: number) => {
         try {
-            const response = await fetch(`${API_BASE_URL}/journaux-tresorerie/${id}/reactiver`, {
-                method: "PUT",
-                headers: getAuthHeaders(),
-            });
-
-            const data = await response.json();
-
-            if (!response.ok) {
-                throw new Error(data.error || data.message || "Erreur lors de la réactivation");
-            }
+            const data = await fetchJson(api(`/journaux-tresorerie/${id}/reactiver`), { method: "PUT" });
 
             toast({
                 title: "Succès",
@@ -539,16 +481,7 @@ const JournalTresorerie = () => {
 
     const handleVerrouiller = async (id: number) => {
         try {
-            const response = await fetch(`${API_BASE_URL}/journaux-tresorerie/${id}/verrouiller`, {
-                method: "PUT",
-                headers: getAuthHeaders(),
-            });
-
-            const data = await response.json();
-
-            if (!response.ok) {
-                throw new Error(data.error || data.message || "Erreur lors du verrouillage");
-            }
+            const data = await fetchJson(api(`/journaux-tresorerie/${id}/verrouiller`), { method: "PUT" });
 
             toast({
                 title: "Succès",
@@ -567,16 +500,7 @@ const JournalTresorerie = () => {
 
     const handleDeverrouiller = async (id: number) => {
         try {
-            const response = await fetch(`${API_BASE_URL}/journaux-tresorerie/${id}/deverrouiller`, {
-                method: "PUT",
-                headers: getAuthHeaders(),
-            });
-
-            const data = await response.json();
-
-            if (!response.ok) {
-                throw new Error(data.error || data.message || "Erreur lors du déverrouillage");
-            }
+            const data = await fetchJson(api(`/journaux-tresorerie/${id}/deverrouiller`), { method: "PUT" });
 
             toast({
                 title: "Succès",
@@ -728,17 +652,20 @@ const JournalTresorerie = () => {
 
     if (loading) {
         return (
-            <div className="flex items-center justify-center min-h-screen">
-                <div className="flex flex-col items-center gap-4">
-                    <Loader2 className="w-8 h-8 animate-spin text-primary" />
-                    <p className="text-muted-foreground">Chargement des journaux...</p>
+            <MainLayout>
+                <div className="flex items-center justify-center min-h-screen">
+                    <div className="flex flex-col items-center gap-4">
+                        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                        <p className="text-muted-foreground">Chargement des journaux...</p>
+                    </div>
                 </div>
-            </div>
+            </MainLayout>
         );
     }
 
     return (
-        <div className="p-6 space-y-6">
+        <MainLayout>
+            <div className="p-6 space-y-6">
             {/* En-tête */}
             <div className="flex justify-between items-center">
                 <div>
@@ -1316,7 +1243,7 @@ const JournalTresorerie = () => {
                 </AlertDescription>
             </Alert>
         </div>
+        </MainLayout>
     );
 };
-
 export default JournalTresorerie;

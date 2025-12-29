@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -8,8 +9,69 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Save, Plus, Trash2, Pencil, Shield, Loader2, Eye, RefreshCw } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
+import MainLayout from "@/components/layout/MainLayout";
 
-const API_URL = "http://127.0.0.1:8000/api";
+// Allow access to Vite env in this file
+declare global {
+    interface ImportMetaEnv {
+        VITE_API_BASE_URL?: string;
+    }
+    interface ImportMeta {
+        readonly env: ImportMetaEnv;
+    }
+}
+
+const API_BASE_URL = "http://127.0.0.1:8000/api";
+const API_BASE = (import.meta.env as any).VITE_API_BASE_URL ?? API_BASE_URL;
+const api = (path: string) => `${API_BASE}/${path.replace(/^\//, "")}`;
+
+const getAuthHeaders = (contentType: string | null = "application/json"): HeadersInit => {
+    const navigate = useNavigate();
+    const token = localStorage.getItem("token");
+    const headers: HeadersInit = {
+        Accept: "application/json",
+    };
+    if (contentType) headers["Content-Type"] = contentType;
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    return headers;
+};
+
+async function safeJson(res: Response) {
+    const ct = res.headers.get("content-type") || "";
+    if (ct.includes("application/json")) return res.json();
+    const text = await res.text();
+    try {
+        return JSON.parse(text);
+    } catch {
+        return text;
+    }
+}
+
+async function fetchJson(url: string, options: RequestInit = {}, navigate?: any) {
+    const headers = { ...getAuthHeaders(), ...(options.headers || {}) } as HeadersInit;
+    const resp = await fetch(url, { ...options, headers });
+    const data = await safeJson(resp);
+
+    if (resp.status === 401) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        localStorage.setItem("isAuthenticated", "false");
+        if (navigate) navigate("/login");
+        const err: any = new Error("Unauthorized");
+        err.status = 401;
+        err.data = data;
+        throw err;
+    }
+
+    if (!resp.ok) {
+        const err: any = new Error("Request error");
+        err.status = resp.status;
+        err.data = data;
+        throw err;
+    }
+
+    return data;
+}
 
 interface Role {
     id: number;
@@ -64,46 +126,27 @@ const GestionRoles = () => {
 
         setLoadingPermissions(true);
         try {
-            // CORRECTION ICI : Utiliser /api/permissions au lieu de /api/roles/permissions
-            const res = await fetch(`${API_URL}/permissions`, {
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${token}`
-                }
-            });
-
-            if (res.ok) {
-                const data = await res.json();
-                setAvailablePermissions(data);
-            } else if (res.status === 404) {
-                // Si l'endpoint n'existe pas encore
+            const data = await fetchJson(api("permissions"), {}, navigate);
+            setAvailablePermissions(Array.isArray(data) ? data : data || []);
+        } catch (err: any) {
+            if (err.status === 404) {
                 console.warn("Endpoint /api/permissions non trouvé. Utilisation des permissions par défaut.");
-
-                // Tester d'abord les permissions courantes
                 const testPermissions = ["read", "write", "update", "delete"];
                 const existingPermissions: Permission[] = [];
-
-                // Tester chaque permission via l'API de création de rôle
                 for (const perm of testPermissions) {
-                    existingPermissions.push({
-                        id: existingPermissions.length + 1,
-                        code: perm,
-                        roles_count: 0
-                    });
+                    existingPermissions.push({ id: existingPermissions.length + 1, code: perm, roles_count: 0 });
                 }
-
                 setAvailablePermissions(existingPermissions);
+            } else {
+                console.error("Erreur lors du chargement des permissions", err);
+                const defaultPermissions: Permission[] = [
+                    { id: 1, code: "read", roles_count: 0 },
+                    { id: 2, code: "write", roles_count: 0 },
+                    { id: 3, code: "update", roles_count: 0 },
+                    { id: 4, code: "delete", roles_count: 0 }
+                ];
+                setAvailablePermissions(defaultPermissions);
             }
-        } catch (error) {
-            console.error("Erreur lors du chargement des permissions", error);
-            // En cas d'erreur, utiliser les permissions par défaut
-            const defaultPermissions: Permission[] = [
-                { id: 1, code: "read", roles_count: 0 },
-                { id: 2, code: "write", roles_count: 0 },
-                { id: 3, code: "update", roles_count: 0 },
-                { id: 4, code: "delete", roles_count: 0 }
-            ];
-            setAvailablePermissions(defaultPermissions);
         } finally {
             setLoadingPermissions(false);
         }
@@ -118,23 +161,11 @@ const GestionRoles = () => {
 
         setLoading(true);
         try {
-            const res = await fetch(`${API_URL}/roles`, {
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${token}`
-                }
-            });
-
-            if (res.status === 401) {
-                toast({ title: "Erreur", description: "Non autorisé, reconnectez-vous.", variant: "destructive" });
-                return;
-            }
-
-            const data = await res.json();
+            const data = await fetchJson(api("roles"), {}, navigate);
             setRoles(Array.isArray(data) ? data : []);
-        } catch (error) {
+        } catch (error: any) {
             console.error("Erreur lors du chargement des rôles", error);
-            toast({ title: "Erreur", description: "Impossible de charger les rôles.", variant: "destructive" });
+            toast({ title: "Erreur", description: error?.data?.message || "Impossible de charger les rôles.", variant: "destructive" });
         } finally {
             setLoading(false);
         }
@@ -158,29 +189,18 @@ const GestionRoles = () => {
         const normalizedPermissions = selectedPermissions.map(p => p.toLowerCase());
 
         const method = editingId ? "PUT" : "POST";
-        const url = editingId ? `${API_URL}/roles/${editingId}` : `${API_URL}/roles`;
+        const url = editingId ? api(`roles/${editingId}`) : api(`roles`);
 
         try {
-            const res = await fetch(url, {
+            const result: any = await fetchJson(url, {
                 method,
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${token}`
-                },
                 body: JSON.stringify({
                     code: code.trim(),
                     libelle: libelle.trim(),
                     statut,
                     permissions: normalizedPermissions
                 })
-            });
-
-            if (!res.ok) {
-                const errorData = await res.json();
-                throw new Error(errorData?.error || `Erreur ${res.status}`);
-            }
-
-            const result = await res.json();
+            }, navigate);
 
             toast({
                 title: editingId ? "Rôle mis à jour" : "Rôle créé",
@@ -195,14 +215,14 @@ const GestionRoles = () => {
         } catch (error: any) {
             console.error("Détails de l'erreur:", error);
 
-            let errorMessage = error.message || "Impossible de sauvegarder le rôle.";
+            let errorMessage = error?.data?.message || error.message || "Impossible de sauvegarder le rôle.";
 
             // Messages d'erreur plus user-friendly
-            if (errorMessage.includes("Code déjà utilisé")) {
+            if ((error?.data?.message || errorMessage).includes("Code déjà utilisé")) {
                 errorMessage = "Ce code de rôle est déjà utilisé. Veuillez en choisir un autre.";
-            } else if (errorMessage.includes("Permissions invalides")) {
+            } else if ((error?.data?.message || errorMessage).includes("Permissions invalides")) {
                 errorMessage = "Certaines permissions spécifiées sont invalides.";
-            } else if (errorMessage.includes("401")) {
+            } else if (error.status === 401) {
                 errorMessage = "Session expirée. Veuillez vous reconnecter.";
             }
 
@@ -236,23 +256,7 @@ const GestionRoles = () => {
         if (!confirm("Voulez-vous vraiment supprimer ce rôle ? Cette action est irréversible.")) return;
 
         try {
-            const res = await fetch(`${API_URL}/roles/${id}`, {
-                method: "DELETE",
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${token}`
-                }
-            });
-
-            const result = await res.json();
-
-            if (!res.ok) {
-                let errorMessage = result?.error || `Erreur ${res.status}`;
-                if (errorMessage.includes("assigné à des utilisateurs")) {
-                    errorMessage = "Ce rôle ne peut pas être supprimé car il est assigné à des utilisateurs.";
-                }
-                throw new Error(errorMessage);
-            }
+            const result: any = await fetchJson(api(`roles/${id}`), { method: "DELETE" }, navigate);
 
             toast({
                 title: "Rôle supprimé",
@@ -263,9 +267,13 @@ const GestionRoles = () => {
             fetchPermissions();
         } catch (err: any) {
             console.error(err);
+            let errorMessage = err?.data?.message || err?.message || "Impossible de supprimer ce rôle.";
+            if ((err?.data?.message || errorMessage).includes("assigné à des utilisateurs")) {
+                errorMessage = "Ce rôle ne peut pas être supprimé car il est assigné à des utilisateurs.";
+            }
             toast({
                 title: "Erreur",
-                description: err.message || "Impossible de supprimer ce rôle.",
+                description: errorMessage,
                 variant: "destructive"
             });
         }
@@ -316,7 +324,8 @@ const GestionRoles = () => {
     };
 
     return (
-        <div className="space-y-6 p-4 md:p-6">
+        <MainLayout>
+            <div className="space-y-6 p-4 md:p-6">
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                 <div>
                     <h1 className="text-2xl md:text-3xl font-bold flex items-center gap-2">
@@ -608,7 +617,8 @@ const GestionRoles = () => {
                     )}
                 </CardContent>
             </Card>
-        </div>
+            </div>
+        </MainLayout>
     );
 };
 

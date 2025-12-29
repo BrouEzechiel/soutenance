@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Plus, Pencil, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
     Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
 } from "@/components/ui/dialog";
@@ -16,6 +17,54 @@ import {
     AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { UtilisateursForm } from "@/components/forms/UtilisateursForm";
+
+const API_BASE = "http://127.0.0.1:8000/api";
+
+// Helper pour parser les réponses JSON de manière sécurisée
+const safeJson = async (res: Response) => {
+    try {
+        const txt = await res.text();
+        const trimmed = txt.trim();
+        if (trimmed.startsWith('<')) {
+            console.error('Expected JSON but received HTML:', trimmed.substring(0, 500));
+            return null;
+        }
+        return JSON.parse(trimmed);
+    } catch (e) {
+        console.error('Failed to parse JSON response', e);
+        return null;
+    }
+};
+
+// Wrapper fetch centralisé avec gestion de l'authentification et des erreurs 401
+const fetchJson = async (url: string, opts: RequestInit = {}, navigate?: any) => {
+    const token = localStorage.getItem('token') || localStorage.getItem('auth_token') || null;
+    const headers: Record<string, string> = { ...(opts.headers as Record<string, string> || {}) };
+    if (!headers['Content-Type'] && opts.body && typeof opts.body === 'string') {
+        headers['Content-Type'] = 'application/json';
+    }
+    if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+    }
+    const res = await fetch(url, { ...opts, headers });
+    // Gestion des erreurs 401 (token expiré/invalide)
+    if (res.status === 401) {
+        try {
+            localStorage.removeItem('token');
+            localStorage.removeItem('user');
+            localStorage.removeItem('isAuthenticated');
+        } catch (e) {
+            // ignore
+        }
+        toast.error('Session expirée ou non autorisée — veuillez vous reconnecter');
+        if (navigate) {
+            navigate('/login');
+        } else if (typeof window !== 'undefined' && window.location) {
+            window.location.href = '/login';
+        }
+    }
+    return res;
+};
 
 // Modifiez la fonction getRoleBadge pour utiliser roleEntities
 const getRoleBadge = (utilisateur: any) => {
@@ -50,6 +99,7 @@ const getStatusBadge = (statut: string) => {
 };
 
 export default function Utilisateurs() {
+    const navigate = useNavigate();
     const [utilisateurs, setUtilisateurs] = useState<any[]>([]);
     const [open, setOpen] = useState(false);
     const [editingUtilisateur, setEditingUtilisateur] = useState<any>(null);
@@ -60,13 +110,7 @@ export default function Utilisateurs() {
     const fetchUsers = async () => {
         if (!token) return;
         try {
-            const res = await fetch("http://127.0.0.1:8000/api/utilisateurs/list", {
-                method: "GET",
-                headers: {
-                    "Authorization": `Bearer ${token}`,
-                    "Content-Type": "application/json",
-                },
-            });
+            const res = await fetchJson(`${API_BASE}/utilisateurs/list`, {}, navigate);
             if (!res.ok) throw new Error("Erreur API");
             const data = await res.json();
             if (Array.isArray(data)) setUtilisateurs(data);
@@ -99,17 +143,28 @@ export default function Utilisateurs() {
                 societe: values.societe,
             };
 
-            if (values.motDePasseHashe) payload.password = values.motDePasseHashe;
+            // If editing an existing user and current user is admin/super-admin,
+            // require the ancienMotDePasse when changing the target user's password.
+            const currentUser = JSON.parse(localStorage.getItem("user") || "{}");
+            const currentRoles: string[] = currentUser.roles || [];
+            const isAdmin = currentRoles.includes("ROLE_ADMINISTRATEUR") || currentRoles.includes("ROLE_SUPER_ADMIN");
+
+            if (values.motDePasseHashe) {
+                if (editingUtilisateur && isAdmin) {
+                    if (!values.ancienMotDePasse) {
+                        return toast.error("Ancien mot de passe requis pour modifier le mot de passe de cet utilisateur.");
+                    }
+                    // include oldPassword for backend verification
+                    payload.oldPassword = values.ancienMotDePasse;
+                }
+                payload.password = values.motDePasseHashe;
+            }
             if (!editingUtilisateur) payload.created_at = new Date().toISOString();
 
-            const response = await fetch(url, {
+            const response = await fetchJson(url, {
                 method,
-                headers: {
-                    "Authorization": `Bearer ${token}`,
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify(payload),
-            });
+                body: JSON.stringify(payload)
+            }, navigate);
 
             if (!response.ok) {
                 const errData = await response.json().catch(() => ({}));
@@ -143,20 +198,21 @@ export default function Utilisateurs() {
         setEditingUtilisateur(null);
     };
 
-    const handleDelete = (id: number) => {
+    const handleDelete = async (id: number) => {
         if (!token) return toast.error("Token manquant !");
-        fetch(`http://127.0.0.1:8000/api/utilisateurs/${id}`, {
-            method: "DELETE",
-            headers: {"Authorization": `Bearer ${token}`},
-        })
-            .then(res => {
-                if (res.status === 204) {
-                    setUtilisateurs(prev => prev.filter(u => u.id !== id));
-                    toast.success("Utilisateur supprimé avec succès");
-                } else {
-                    toast.error("Erreur lors de la suppression");
-                }
-            });
+        try {
+            const res = await fetchJson(`${API_BASE}/utilisateurs/${id}`, {
+                method: "DELETE"
+            }, navigate);
+            if (res.status === 204) {
+                setUtilisateurs(prev => prev.filter(u => u.id !== id));
+                toast.success("Utilisateur supprimé avec succès");
+            } else {
+                toast.error("Erreur lors de la suppression");
+            }
+        } catch (err: any) {
+            toast.error(err.message || "Erreur lors de la suppression");
+        }
         setDeletingId(null);
     };
 
