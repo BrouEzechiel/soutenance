@@ -613,6 +613,13 @@ const FacturePage = () => {
             return;
         }
 
+        // Pour les champs d'ID, stocker un nombre plutôt qu'une string
+        if (field === 'tiersId' || field === 'compteComptableId') {
+            const parsed = (value === undefined || value === null || value === "") ? undefined : Number(value);
+            setFormData(prevState => ({ ...prevState, [field]: isNaN(parsed as number) ? undefined : parsed }));
+            return;
+        }
+
         setFormData(prevState => ({
             ...prevState,
             [field]: value
@@ -663,7 +670,8 @@ const FacturePage = () => {
 
         // Validation stricte de l'ID du compte comptable si fourni
         if (formData.compteComptableId) {
-            const compteExists = comptes.some(c => c.id === formData.compteComptableId);
+            const compteIdNum = Number(formData.compteComptableId);
+            const compteExists = comptes.some(c => c.id === compteIdNum);
             if (!compteExists) {
                 errors.push("Le compte comptable sélectionné n'existe pas ou n'est plus actif");
             }
@@ -719,7 +727,7 @@ const FacturePage = () => {
                 solde: formData.solde || formData.montant,
                 statut: formData.statut,
                 tiersId: formData.tiersId,
-                compteComptableId: formData.compteComptableId || null,
+                compteComptableId: formData.compteComptableId ? Number(formData.compteComptableId) : null,
                 description: formData.description || null,
                 bonCommande: formData.bonCommande || null,
                 bonLivraison: formData.bonLivraison || null,

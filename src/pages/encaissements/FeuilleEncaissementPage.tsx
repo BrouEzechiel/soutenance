@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback } from "react";
+import { useParams } from 'react-router-dom';
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Printer, Plus, Trash2, Save, Send, CheckCircle, XCircle, Download, Eye, Search, Filter, Loader2, AlertCircle, Building, FileText, Calendar, RefreshCw } from "lucide-react";
+import { Printer, Plus, Trash2, Save, Send, CheckCircle, XCircle, Download, Eye, Search, Filter, Loader2, AlertCircle, Building, FileText, Calendar, RefreshCw, History } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from "@/components/ui/dialog";
@@ -43,6 +44,8 @@ const safeJson = async (res: Response) => {
     try {
         const txt = await res.text();
         const trimmed = txt.trim();
+        // preview removed for production
+
         if (trimmed.startsWith('<')) {
             console.error('Expected JSON but received HTML:', trimmed.substring(0, 500));
             return null;
@@ -65,6 +68,7 @@ const fetchJson = async (url: string, opts: RequestInit = {}, navigate?: any) =>
         headers['Authorization'] = `Bearer ${token}`;
     }
     const res = await fetch(url, { ...opts, headers });
+    // basic response info not logged here
     // Gestion des erreurs 401 (token expiré/invalide)
     if (res.status === 401) {
         try {
@@ -132,6 +136,10 @@ interface PlanComptable {
         id: number;
         raisonSociale: string;
     };
+
+    
+
+    
     createdAt?: string;
     updatedAt?: string;
     createdBy?: string;
@@ -292,6 +300,7 @@ const formatDateForSymfony = (dateString: string): string => {
 const FeuilleEncaissementPage = () => {
     const { toast } = useToast();
     const navigate = useNavigate();
+    const { id: routeId } = useParams<{ id?: string }>();
     const [loading, setLoading] = useState(false);
     const [refreshing, setRefreshing] = useState(false);
     const [userRoles, setUserRoles] = useState<string[]>([]);
@@ -376,7 +385,7 @@ const FeuilleEncaissementPage = () => {
 
     // États pour la recherche
     const [searchQuery, setSearchQuery] = useState('');
-    const [selectedTiersType, setSelectedTiersType] = useState<string>('');
+    const [selectedTiersType, setSelectedTiersType] = useState<string | undefined>(undefined);
 
     // États pour le chargement
     const [isLoadingTiers, setIsLoadingTiers] = useState(false);
@@ -386,6 +395,7 @@ const FeuilleEncaissementPage = () => {
     const [isLoadingSociete, setIsLoadingSociete] = useState(false);
     const [isLoadingDevises, setIsLoadingDevises] = useState(false);
     const [isCreatingFacture, setIsCreatingFacture] = useState(false);
+    
     // Fonction pour générer un numéro de facture automatiquement
     const handleGenererNumeroFacture = () => {
         const year = new Date().getFullYear();
@@ -404,9 +414,9 @@ const FeuilleEncaissementPage = () => {
         });
     };
 
-
     // Historique des actions pour la feuille
     const [historique, setHistorique] = useState<any[]>([]);
+    const [isLoadingHistorique, setIsLoadingHistorique] = useState(false);
 
     // États pour la gestion des erreurs
     const [error, setError] = useState<string | null>(null);
@@ -457,6 +467,63 @@ const FeuilleEncaissementPage = () => {
             refreshFeuille();
         }
     }, [feuille.id]);
+
+    // CORRECTION IMPORTANTE : Charger l'historique quand la feuille est chargée
+    useEffect(() => {
+        const loadHistorique = async () => {
+            if (feuille.id) {
+                await fetchHistorique();
+            }
+        };
+                const timer = setTimeout(() => {
+            loadHistorique();
+        }, 500);
+        return () => clearTimeout(timer);
+    }, [feuille.id]);
+
+    // Si une id est présente dans l'URL, initialiser la feuille.id pour forcer le chargement
+    useEffect(() => {
+        if (routeId) {
+            const num = Number(routeId);
+            if (!isNaN(num) && num > 0) {
+                setFeuille(prev => ({ ...(prev as any), id: num }));
+            }
+        }
+    }, [routeId]);
+
+    // Fallback: tenter d'extraire un ID numérique depuis l'URL si useParams n'a rien fourni
+    useEffect(() => {
+        if ((feuille as any)?.id) return; // déjà défini
+        try {
+            const url = typeof window !== 'undefined' ? window.location.href : null;
+            if (!url) return;
+
+            // Chercher query param 'id'
+            const search = typeof window !== 'undefined' ? window.location.search : '';
+            const params = new URLSearchParams(search);
+            const qid = params.get('id');
+            if (qid && !isNaN(Number(qid))) {
+                setFeuille(prev => ({ ...(prev as any), id: Number(qid) }));
+                return;
+            }
+
+            // Sinon, tenter le dernier segment numérique du path
+            const path = typeof window !== 'undefined' ? window.location.pathname : '';
+            const parts = path.split('/').filter(Boolean);
+            for (let i = parts.length - 1; i >= 0; i--) {
+                const p = parts[i];
+                const n = Number(p);
+                if (!isNaN(n) && n > 0) {
+                    setFeuille(prev => ({ ...(prev as any), id: n }));
+                    return;
+                }
+            }
+        } catch (e) {
+            // fallback extraction failed
+        }
+    }, []);
+
+    useEffect(() => {}, [(feuille as any)?.id]);
 
     const fetchUserRoles = async () => {
         try {
@@ -524,9 +591,10 @@ const FeuilleEncaissementPage = () => {
                     }));
                     // Charger l'historique si disponible
                     try {
-                        await fetchHistorique(result.data.id || feuille.id);
+                        const fid = result.data.id || feuille.id;
+                        await fetchHistorique();
                     } catch (e) {
-                        // silent
+                        // ignore historique errors
                     }
                 }
             }
@@ -805,21 +873,83 @@ const FeuilleEncaissementPage = () => {
         }
     };
 
-    // Récupérer l'historique d'une feuille (si endpoint disponible)
-    const fetchHistorique = async (feuilleId?: number) => {
-        if (!feuilleId) return;
+    // Charger l'historique : tenter spécifique à la feuille si possible, sinon global
+    // forceReload: when true adds a cache-busting query param to force fresh DB read
+    const fetchHistorique = async (forceReload: boolean = false) => {
+        setIsLoadingHistorique(true);
         try {
-            const response = await fetchJson(`${API_ENDPOINTS.FEUILLES_ENCAISSEMENT}/${feuilleId}/historique`, {}, navigate);
-            if (!response.ok) return;
-            const data = await response.json();
-            let items = [] as any[];
-            if (data.success && data.data) items = Array.isArray(data.data) ? data.data : [data.data];
-            else if (Array.isArray(data)) items = data;
-            else if (data.items && Array.isArray(data.items)) items = data.items;
+            // si on a une feuille en contexte, essayer l'historique par-feuille d'abord
+            if (feuille?.id) {
+                let url = `${API_ENDPOINTS.FEUILLES_ENCAISSEMENT}/${feuille.id}/historique`;
+                if (forceReload) {
+                    const sep = url.includes('?') ? '&' : '?';
+                    url = `${url}${sep}_ts=${Date.now()}`;
+                }
+                const response = await fetchJson(url, {}, navigate);
+                if (response) {
+                    const data = await safeJson(response);
+                    let items: any[] = [];
+                    if (Array.isArray(data)) items = data;
+                    else if (data?.data) items = Array.isArray(data.data) ? data.data : [data.data];
+                    else if (Array.isArray((data as any)?.items)) items = (data as any).items;
+
+                    // fallback to global if nothing for this feuille
+                    if (items.length === 0) {
+                        await fetchHistoriqueGlobal(forceReload);
+                        return;
+                    }
+
+                    setHistorique(items);
+                    return;
+                }
+            }
+
+            // default: fetch global
+            await fetchHistoriqueGlobal(forceReload);
+        } catch (e) {
+            setHistorique([]);
+        } finally {
+            setIsLoadingHistorique(false);
+        }
+    };
+
+    // Fonction pour charger l'historique global (toutes les feuilles)
+    const fetchHistoriqueGlobal = async (forceReload: boolean = false) => {
+        setIsLoadingHistorique(true);
+        try {
+            let url = `${API_ENDPOINTS.FEUILLES_ENCAISSEMENT}/historique`;
+            if (forceReload) {
+                const sep = url.includes('?') ? '&' : '?';
+                url = `${url}${sep}_ts=${Date.now()}`;
+            }
+            const response = await fetchJson(url, {}, navigate);
+
+            if (!response) {
+                setHistorique([]);
+                return;
+            }
+
+            // Même si success=false côté API, on tente d'extraire les données
+            const data = await safeJson(response);
+            let items: any[] = [];
+
+            if (Array.isArray(data)) {
+                items = data;
+            } else if (data?.data) {
+                items = Array.isArray(data.data) ? data.data : [data.data];
+            } else if (Array.isArray((data as any)?.items)) {
+                items = (data as any).items;
+            } else if (Array.isArray((data as any)?.historique)) {
+                items = (data as any).historique;
+            }
+
+            console.debug('[Historique] fetchHistoriqueGlobal -> items count', items?.length, items?.slice?.(0,3));
             setHistorique(items);
         } catch (e) {
-            // Pas critique — endpoint peut ne pas exister encore
-            console.debug('Historique non disponible', e);
+            // Ne pas remonter l'erreur en console, juste vider l'historique
+            setHistorique([]);
+        } finally {
+            setIsLoadingHistorique(false);
         }
     };
 
@@ -933,7 +1063,7 @@ const FeuilleEncaissementPage = () => {
         return date.toLocaleString('fr-FR');
     };
 
-    // Sauvegarder la feuille - VERSION CORRIGÉE
+    // Sauvegarder la feuille - VERSION CORRIGÉE AVEC HISTORIQUE
     const handleSave = async () => {
         if (!isFormValid()) {
             toast({
@@ -1136,6 +1266,13 @@ const FeuilleEncaissementPage = () => {
                     description: feuille.id ? "Feuille mise à jour" : "Feuille créée",
                     variant: "default",
                 });
+
+                // SOLUTION 1 : Rafraîchir l'historique après la sauvegarde réussie
+                const feuilleId = result.data?.id || result.id || updatedFeuille.id;
+                if (feuilleId) {
+                    console.log('[Historique] Rafraîchissement après sauvegarde, ID:', feuilleId);
+                    await fetchHistorique();
+                }
             } else {
                 throw new Error(result.message || "Erreur lors de la sauvegarde");
             }
@@ -1183,6 +1320,10 @@ const FeuilleEncaissementPage = () => {
                 statut: result.data?.statut || result.statut || prev.statut,
                 dateEncaissement: formatDateForInput(result.data?.dateEncaissement || result.dateEncaissement || prev.dateEncaissement)
             }));
+            
+            // Rafraîchir l'historique après soumission
+            await fetchHistorique();
+            
             toast({
                 title: "Succès",
                 description: "Feuille soumise pour validation",
@@ -1343,13 +1484,8 @@ const FeuilleEncaissementPage = () => {
                     description: result.message || "Feuille validée avec succès",
                     variant: "default",
                 });
-                // Tenter de récupérer l'historique si disponible
-                try {
-                    const feuilleId = result.data?.id || feuille.id;
-                    await fetchHistorique(feuilleId);
-                } catch (e) {
-                    // silent
-                }
+                // Rafraîchir l'historique après validation
+                await fetchHistorique();
             } else {
                 throw new Error(result.message || "Erreur lors de la validation");
             }
@@ -1407,6 +1543,10 @@ const FeuilleEncaissementPage = () => {
             }));
             setShowRejetModal(false);
             setMotifRejet('');
+            
+            // Rafraîchir l'historique après rejet
+            await fetchHistorique();
+            
             toast({
                 title: "Succès",
                 description: "Feuille rejetée",
@@ -1717,6 +1857,116 @@ const FeuilleEncaissementPage = () => {
         }
     }, [deviseSociete]);
 
+    // Rendu du contenu de l'historique
+    const renderHistoriqueContent = () => {
+        const isGlobalView = true;
+        
+        if (isLoadingHistorique) {
+            return (
+                <div className="text-center py-8">
+                    <Loader2 className="w-8 h-8 mx-auto mb-4 animate-spin text-gray-400" />
+                    <p className="text-gray-500">Chargement de l'historique...</p>
+                </div>
+            );
+        }
+        
+        if (historique.length === 0) {
+            return (
+                <div className="text-center py-8">
+                    <History className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                    <h3 className="text-lg font-medium text-gray-700">Aucun historique disponible</h3>
+                    <p className="text-gray-500 mt-2">Aucune action n'a encore été enregistrée.</p>
+                    <Button 
+                        onClick={() => fetchHistorique()} 
+                        variant="outline" 
+                        className="mt-4"
+                    >
+                        <RefreshCw className="w-4 h-4 mr-2" />
+                        Rafraîchir
+                    </Button>
+                </div>
+            );
+        }
+        
+        return (
+            <div className="space-y-2">
+                <div className="flex justify-between items-center mb-4">
+                    <div className="text-sm text-gray-500">
+                        {historique.length} action(s) enregistrée(s)
+                        <span className="ml-2 text-blue-500">(Vue globale)</span>
+                    </div>
+                    <Button 
+                        onClick={() => fetchHistorique()} 
+                        variant="outline" 
+                        size="sm"
+                        disabled={isLoadingHistorique}
+                    >
+                        {isLoadingHistorique ? (
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        ) : (
+                            <RefreshCw className="w-4 h-4 mr-2" />
+                        )}
+                        Rafraîchir
+                    </Button>
+                </div>
+                
+                <Table>
+                    <TableHeader>
+                        <TableRow>
+                            <TableHead>Date</TableHead>
+                            <TableHead>Feuille</TableHead>
+                            <TableHead>Action</TableHead>
+                            <TableHead>Utilisateur</TableHead>
+                            <TableHead>Détails</TableHead>
+                        </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                        {historique
+                            .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
+                            .map((h, index) => (
+                            <TableRow key={h.id || index}>
+                                <TableCell>
+                                    {h.createdAt ? formatDateTime(h.createdAt) : 'Non daté'}
+                                </TableCell>
+                                <TableCell>
+                                    <Badge variant="outline">#{h.feuille_id || h.feuille?.id || '?'}</Badge>
+                                </TableCell>
+                                <TableCell>
+                                    <Badge variant={
+                                        h.action?.includes('Valid') || h.action?.includes('VALIDER') ? 'default' :
+                                        h.action?.includes('Rejet') || h.action?.includes('REJETER') ? 'destructive' :
+                                        h.action?.includes('Création') || h.action?.includes('CREER') ? 'secondary' :
+                                        'outline'
+                                    }>
+                                        {h.action || 'Action non spécifiée'}
+                                    </Badge>
+                                </TableCell>
+                                <TableCell>
+                                    {h.utilisateur?.nom || h.utilisateur?.id || 'Système'}
+                                </TableCell>
+                                <TableCell className="max-w-xs">
+                                    <div className="text-xs">
+                                        {(() => {
+                                            try {
+                                                if (!h.details) return '-';
+                                                const details = JSON.parse(h.details);
+                                                return Object.entries(details)
+                                                    .map(([key, value]) => `${key}: ${value}`)
+                                                    .join(', ');
+                                            } catch {
+                                                return h.details || '-';
+                                            }
+                                        })()}
+                                    </div>
+                                </TableCell>
+                            </TableRow>
+                        ))}
+                    </TableBody>
+                </Table>
+            </div>
+        );
+    };
+
     // Rendu du contenu principal
     return (
         <MainLayout>
@@ -1726,7 +1976,10 @@ const FeuilleEncaissementPage = () => {
                         <h1 className="text-3xl font-bold text-foreground">Feuille d'Encaissement</h1>
                         <div className="text-muted-foreground">Création et gestion des feuilles d'encaissement</div>
                     </div>
-                    <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2">
+                                    <Button size="sm" variant="ghost" onClick={() => fetchHistorique(true)}>
+                                        Debug Hist
+                                    </Button>
                         <Badge className={STATUTS[feuille.statut].color}>
                             {refreshing ? (
                                 <Loader2 className="w-3 h-3 animate-spin mr-1" />
@@ -1824,11 +2077,15 @@ const FeuilleEncaissementPage = () => {
                     </Alert>
                 )}
 
-                <Tabs defaultValue="saisie" className="w-full">
+                <Tabs defaultValue="saisie" className="w-full" onValueChange={(val: any) => {
+                    if (val === 'historique') {
+                        // Charger l'historique : spécifique à la feuille si ID disponible, sinon global
+                        fetchHistorique();
+                    }
+                }}>
                     <TabsList>
                         <TabsTrigger value="saisie">Saisie</TabsTrigger>
                         <TabsTrigger value="historique">Historique</TabsTrigger>
-                        <TabsTrigger value="statistiques">Statistiques</TabsTrigger>
                     </TabsList>
 
                     <TabsContent value="saisie" className="space-y-6">
@@ -2006,7 +2263,7 @@ const FeuilleEncaissementPage = () => {
                                             <div className="space-y-2">
                                                 <Label>Compte client *</Label>
                                                 <Select
-                                                    value={feuille.compteClient?.id?.toString() || ''}
+                                                    value={feuille.compteClient?.id?.toString() || undefined}
                                                     onValueChange={(value) => {
                                                         const compte = planComptable.find(pc => pc.id === parseInt(value));
                                                         if (compte) setFeuille({...feuille, compteClient: compte});
@@ -2308,7 +2565,7 @@ const FeuilleEncaissementPage = () => {
                                         <div className="space-y-2">
                                             <Label>Compte</Label>
                                             <Select
-                                                value={feuille.compteTresorerie?.id?.toString() || ''}
+                                                value={feuille.compteTresorerie?.id?.toString() || undefined}
                                                 onValueChange={(value) => {
                                                     const compte = comptesTresorerie.find(ct => ct.id === parseInt(value));
                                                     if (compte) setFeuille({...feuille, compteTresorerie: compte});
@@ -2569,58 +2826,22 @@ const FeuilleEncaissementPage = () => {
                     <TabsContent value="historique">
                         <Card>
                             <CardHeader>
-                                <CardTitle>Historique des feuilles d'encaissement</CardTitle>
-                            </CardHeader>
-                                    <CardContent>
-                                        {historique.length === 0 ? (
-                                            <div className="text-muted-foreground">Aucun historique disponible.</div>
-                                        ) : (
-                                            <div className="space-y-2">
-                                                <Table>
-                                                    <TableHeader>
-                                                        <TableRow>
-                                                            <TableHead>Date</TableHead>
-                                                            <TableHead>Action</TableHead>
-                                                            <TableHead>Utilisateur</TableHead>
-                                                            <TableHead>Détails</TableHead>
-                                                        </TableRow>
-                                                    </TableHeader>
-                                                    <TableBody>
-                                                        {historique.map((h) => (
-                                                            <TableRow key={h.id}>
-                                                                <TableCell>{h.createdAt ? new Date(h.createdAt).toLocaleString('fr-FR') : '-'}</TableCell>
-                                                                <TableCell>{h.action}</TableCell>
-                                                                <TableCell>{h.utilisateur ? (h.utilisateur.nom || h.utilisateur.id) : '-'}</TableCell>
-                                                                <TableCell>
-                                                                    {(() => {
-                                                                        try {
-                                                                            const d = JSON.parse(h.details || '{}');
-                                                                            return typeof d === 'object' ? Object.entries(d).map(([k, v]) => (<div key={k}><strong>{k}:</strong> {String(v)}</div>)) : String(d);
-                                                                        } catch (e) {
-                                                                            return h.details || '-';
-                                                                        }
-                                                                    })()}
-                                                                </TableCell>
-                                                            </TableRow>
-                                                        ))}
-                                                    </TableBody>
-                                                </Table>
-                                            </div>
-                                        )}
-                                    </CardContent>
-                        </Card>
-                    </TabsContent>
-
-                    <TabsContent value="statistiques">
-                        <Card>
-                            <CardHeader>
-                                <CardTitle>Statistiques</CardTitle>
+                                <CardTitle>Historique des actions</CardTitle>
                             </CardHeader>
                             <CardContent>
-                                <div className="text-muted-foreground">Fonctionnalité en cours de développement...</div>
+                                {(!feuille.id && historique.length === 0) ? (
+                                    <div className="text-center py-8 text-muted-foreground">
+                                        L'historique sera disponible après la sauvegarde de la feuille.
+                                    </div>
+                                ) : (
+                                    // Afficher l'historique existant (per-feuille ou global si disponible)
+                                    renderHistoriqueContent()
+                                )}
                             </CardContent>
                         </Card>
                     </TabsContent>
+
+                    {/* Onglet statistiques retiré */}
                 </Tabs>
 
                 {/* Modal pour créer une nouvelle facture */}
@@ -2701,7 +2922,7 @@ const FeuilleEncaissementPage = () => {
                                 <div className="space-y-2 col-span-2">
                                     <Label htmlFor="facture-tiersId">Tiers *</Label>
                                     <Select
-                                        value={newFacture.tiersId?.toString() || ''}
+                                        value={newFacture.tiersId?.toString() || undefined}
                                         onValueChange={(value) => setNewFacture(prev => ({ ...prev, tiersId: parseInt(value) }))}
                                     >
                                         <SelectTrigger>

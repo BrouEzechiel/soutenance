@@ -51,8 +51,6 @@ import {
   TableHeader, 
   TableRow 
 } from "@/components/ui/table";
-import jsPDF from "jspdf";
-import autoTable from "jspdf-autotable";
 import { format } from "date-fns";
 import { fr } from "date-fns/locale";
 import MainLayout from "@/components/layout/MainLayout";
@@ -135,6 +133,8 @@ const BordereauRemiseCheques = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [frchq, setFrchq] = useState<Frchq | null>(null);
   const [feuillesDisponibles, setFeuillesDisponibles] = useState<FeuilleEncaissement[]>([]);
+  const [remises, setRemises] = useState<Frchq[]>([]);
+  const [isLoadingRemises, setIsLoadingRemises] = useState(false);
   const [banques, setBanques] = useState<Banque[]>([]);
   const [comptes, setComptes] = useState<CompteTresorerie[]>([]);
   const [journaux, setJournaux] = useState<JournalTresorerie[]>([]);
@@ -209,6 +209,78 @@ const BordereauRemiseCheques = () => {
     return res;
   };
 
+  // Export/Print PDF via backend
+  const fetchPdf = async (mode: "download" | "print") => {
+    if (!frchq) return;
+    return fetchPdfById(frchq.id, mode, frchq.numeroFrchq);
+  };
+
+  const fetchPdfById = async (id: number, mode: "download" | "print", filenameBase?: string) => {
+    const token = localStorage.getItem('token') || localStorage.getItem('auth_token') || null;
+    const endpoint = mode === "download" ? `/api/frchq/${id}/export-pdf` : `/api/frchq/${id}/imprimer`;
+
+    if (mode === "print") {
+      // Ouvrir immédiatement une fenêtre vide dans le handler utilisateur pour éviter le bloqueur
+      const win = window.open('about:blank');
+      if (!win) {
+        toast.error('Veuillez autoriser l\'ouverture des popups pour imprimer');
+        return;
+      }
+
+      try {
+        const res = await fetch(api(endpoint), {
+          method: 'GET',
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (!res.ok) {
+          win.close();
+          toast.error('Impossible de générer le PDF');
+          return;
+        }
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        win.location.href = blobUrl;
+        // Optionnel : forcer le focus
+        try { win.focus(); } catch (e) { /* ignore */ }
+        // Nettoyage après un délai
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+      } catch (err) {
+        try { win.close(); } catch (e) { /* ignore */ }
+        console.error('Erreur téléchargement PDF pour impression', err);
+        toast.error('Erreur lors du téléchargement du PDF');
+      }
+
+      return;
+    }
+
+    // Mode download
+    try {
+      const res = await fetch(api(endpoint), {
+        method: 'GET',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) {
+        toast.error('Impossible de générer le PDF');
+        return;
+      }
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = `frchq_${filenameBase ?? id}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+    } catch (err) {
+      console.error('Erreur téléchargement PDF', err);
+      toast.error('Erreur lors du téléchargement du PDF');
+    }
+  };
+
+  const handleExportPDF = () => fetchPdf("download");
+  const handlePrint = () => fetchPdf("print");
+
   // Charger les données initiales
   useEffect(() => {
     const fetchData = async () => {
@@ -272,6 +344,24 @@ const BordereauRemiseCheques = () => {
           setFeuillesDisponibles([]);
           toast.error("Impossible de charger les chèques disponibles");
         }
+
+        // Charger la liste des remises enregistrées (simple liste non paginée)
+        try {
+          setIsLoadingRemises(true);
+          const remRes = await fetchJson(api("/api/frchq"));
+          if (remRes.ok) {
+            const remData = await safeJson(remRes);
+            const list = remData && typeof remData === 'object' ? (remData.data || remData) : [];
+            setRemises(toArray<Frchq>(list));
+          } else {
+            setRemises([]);
+          }
+        } catch (e) {
+          console.error('Erreur chargement remises', e);
+          setRemises([]);
+        } finally {
+          setIsLoadingRemises(false);
+        }
       } catch (error) {
         console.error("Erreur de chargement:", error);
         toast.error("Erreur lors du chargement des données");
@@ -324,15 +414,40 @@ const BordereauRemiseCheques = () => {
         body: JSON.stringify(formData),
       });
 
-      const data = await response.json();
+      const data = await safeJson(response);
 
-      if (response.ok) {
-        toast.success(isEditMode ? "FRCHQ mis à jour" : "FRCHQ créé avec succès");
+      if (response.status === 403) {
+        console.error('Accès refusé:', data);
+        const message = data && typeof data === 'object' ? data.message : data;
+        toast.error(message || "Accès refusé: vous n'avez pas les droits requis");
+      } else if (response.ok) {
+        toast.success(isEditMode ? "Remise mise à jour" : "Remise enregistrée");
         if (!isEditMode) {
-          navigate(`/frchq/${data.data.id}`);
+          const created = data && typeof data === 'object' ? data.data : null;
+          if (created && created.id) {
+            // Récupérer l'objet complet depuis l'API pour s'assurer d'avoir toutes les relations
+            try {
+              const fullRes = await fetchJson(api(`/api/frchq/${created.id}`));
+              const fullData = await safeJson(fullRes);
+              if (fullRes.ok && fullData) {
+                setFrchq(fullData as Frchq);
+              } else {
+                // fallback: utiliser l'objet retourné par la création
+                setFrchq(created as Frchq);
+              }
+            } catch (e) {
+              console.error('Impossible de récupérer FRCHQ complet', e);
+              setFrchq(created as Frchq);
+            }
+            navigate(`/frchq/${created.id}`);
+          } else {
+            console.error('Création FRCHQ: réponse inattendue', data);
+            toast.error('La création a réussi mais la réponse du serveur est inattendue');
+          }
         }
       } else {
-        toast.error(data.message || "Erreur lors de la sauvegarde");
+        console.error('Erreur sauvegarde FRCHQ:', data);
+        toast.error((data && data.message) || 'Erreur lors de la sauvegarde');
       }
     } catch (error) {
       console.error("Erreur:", error);
@@ -349,14 +464,16 @@ const BordereauRemiseCheques = () => {
         method: "POST",
       });
 
-      const data = await response.json();
-
-      if (response.ok) {
+      const data = await safeJson(response);
+      if (response.status === 403) {
+        const message = data && typeof data === 'object' ? data.message : data;
+        toast.error(message || "Accès refusé lors de la validation");
+      } else if (response.ok) {
         toast.success("FRCHQ validé avec succès");
         setFrchq(data.data);
         setStatutActions(prev => ({ ...prev, showValiderDialog: false }));
       } else {
-        toast.error(data.message || "Erreur lors de la validation");
+        toast.error((data && data.message) || "Erreur lors de la validation");
       }
     } catch (error) {
       console.error("Erreur:", error);
@@ -372,15 +489,17 @@ const BordereauRemiseCheques = () => {
         body: JSON.stringify({ numeroBrchq: actionData.numeroBrchq || undefined }),
       });
 
-      const data = await response.json();
-
-      if (response.ok) {
+      const data = await safeJson(response);
+      if (response.status === 403) {
+        const message = data && typeof data === 'object' ? data.message : data;
+        toast.error(message || "Accès refusé lors de la remise");
+      } else if (response.ok) {
         toast.success("FRCHQ remis avec succès");
         setFrchq(data.data);
         setStatutActions(prev => ({ ...prev, showRemettreDialog: false }));
         setActionData(prev => ({ ...prev, numeroBrchq: "" }));
       } else {
-        toast.error(data.message || "Erreur lors de la remise");
+        toast.error((data && data.message) || "Erreur lors de la remise");
       }
     } catch (error) {
       console.error("Erreur:", error);
@@ -396,14 +515,16 @@ const BordereauRemiseCheques = () => {
         body: JSON.stringify({ dateEncaissement: actionData.dateEncaissement }),
       });
 
-      const data = await response.json();
-
-      if (response.ok) {
+      const data = await safeJson(response);
+      if (response.status === 403) {
+        const message = data && typeof data === 'object' ? data.message : data;
+        toast.error(message || "Accès refusé lors de l'encaissement");
+      } else if (response.ok) {
         toast.success("FRCHQ encaissé avec succès");
         setFrchq(data.data);
         setStatutActions(prev => ({ ...prev, showEncaisserDialog: false }));
       } else {
-        toast.error(data.message || "Erreur lors de l'encaissement");
+        toast.error((data && data.message) || "Erreur lors de l'encaissement");
       }
     } catch (error) {
       console.error("Erreur:", error);
@@ -424,15 +545,17 @@ const BordereauRemiseCheques = () => {
         body: JSON.stringify({ motif: actionData.motifImpaye }),
       });
 
-      const data = await response.json();
-
-      if (response.ok) {
+      const data = await safeJson(response);
+      if (response.status === 403) {
+        const message = data && typeof data === 'object' ? data.message : data;
+        toast.error(message || "Accès refusé lors de la déclaration d'impayé");
+      } else if (response.ok) {
         toast.success("FRCHQ déclaré impayé");
         setFrchq(data.data);
         setStatutActions(prev => ({ ...prev, showImpayeDialog: false }));
         setActionData(prev => ({ ...prev, motifImpaye: "" }));
       } else {
-        toast.error(data.message || "Erreur lors de la déclaration d'impayé");
+        toast.error((data && data.message) || "Erreur lors de la déclaration d'impayé");
       }
     } catch (error) {
       console.error("Erreur:", error);
@@ -453,65 +576,22 @@ const BordereauRemiseCheques = () => {
         body: JSON.stringify({ motif: actionData.motifAnnulation }),
       });
 
-      const data = await response.json();
-
-      if (response.ok) {
+      const data = await safeJson(response);
+      if (response.status === 403) {
+        const message = data && typeof data === 'object' ? data.message : data;
+        toast.error(message || "Accès refusé lors de l'annulation");
+      } else if (response.ok) {
         toast.success("FRCHQ annulé avec succès");
         setFrchq(data.data);
         setStatutActions(prev => ({ ...prev, showAnnulerDialog: false }));
         setActionData(prev => ({ ...prev, motifAnnulation: "" }));
       } else {
-        toast.error(data.message || "Erreur lors de l'annulation");
+        toast.error((data && data.message) || "Erreur lors de l'annulation");
       }
     } catch (error) {
       console.error("Erreur:", error);
       toast.error("Erreur de connexion");
     }
-  };
-
-  // Export PDF
-  const handleExportPDF = () => {
-    if (!frchq) return;
-
-    const doc = new jsPDF();
-    
-    doc.setFontSize(18);
-    doc.text("Bordereau de Remise de Chèques (FRCHQ)", 105, 20, { align: "center" });
-    
-    doc.setFontSize(12);
-    doc.text(`N° FRCHQ: ${frchq.numeroFrchq}`, 20, 35);
-    doc.text(`N° BRCHQ: ${frchq.numeroBrchq || "Non attribué"}`, 20, 42);
-    doc.text(`Date remise: ${format(new Date(frchq.dateRemise), "dd/MM/yyyy", { locale: fr })}`, 20, 49);
-    doc.text(`Banque bénéficiaire: ${frchq.banqueBeneficiaire?.nom || "Non défini"}`, 20, 56);
-    doc.text(`Compte: ${frchq.compteTresorerie?.numero || "Non défini"}`, 20, 63);
-    doc.text(`Statut: ${frchq.statutLibelle}`, 20, 70);
-
-    if (frchq.observations) {
-      doc.text(`Observations: ${frchq.observations}`, 20, 77);
-    }
-
-    const tableData = frchq.feuillesEncaissement.map(cheque => [
-      cheque.referenceCheque || "N/A",
-      cheque.nomClient,
-      format(new Date(cheque.dateEncaissement), "dd/MM/yyyy", { locale: fr }),
-      `${parseFloat(cheque.montantPaye).toLocaleString("fr-FR")} FCFA`,
-      cheque.statutLibelle
-    ]);
-
-    autoTable(doc, {
-      startY: 90,
-      head: [["N° Chèque", "Client", "Date", "Montant", "Statut"]],
-      body: tableData,
-      foot: [[
-        "", 
-        "", 
-        "Total:", 
-        `${parseFloat(frchq.montantTotal).toLocaleString("fr-FR")} FCFA`,
-        `${frchq.nombreCheques} chèque(s)`
-      ]]
-    });
-
-    doc.save(`FRCHQ_${frchq.numeroFrchq}_${format(new Date(), "yyyyMMdd_HHmmss")}.pdf`);
   };
 
   // Rendu du statut
@@ -720,6 +800,10 @@ const BordereauRemiseCheques = () => {
     return (
       <div className="flex gap-2">
         {actions}
+        <Button onClick={handlePrint} variant="outline" className="gap-2">
+          <Printer className="w-4 h-4" />
+          Imprimer
+        </Button>
         <Button onClick={handleExportPDF} variant="outline" className="gap-2">
           <FileDown className="w-4 h-4" />
           Exporter PDF
@@ -744,6 +828,52 @@ const BordereauRemiseCheques = () => {
   return (
     <MainLayout>
       <div className="space-y-6">
+      {/* Liste des remises enregistrées */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Remises enregistrées</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {isLoadingRemises ? (
+            <div className="py-6 text-center">Chargement...</div>
+          ) : remises.length === 0 ? (
+            <div className="py-6 text-center text-muted-foreground">Aucune remise trouvée</div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>N° FRCHQ</TableHead>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Montant</TableHead>
+                  <TableHead>Statut</TableHead>
+                  <TableHead>Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {remises.map((r) => (
+                  <TableRow key={r.id}>
+                    <TableCell className="font-medium">{r.numeroFrchq}</TableCell>
+                    <TableCell>{format(new Date(r.dateRemise), "dd/MM/yyyy", { locale: fr })}</TableCell>
+                    <TableCell className="font-semibold">{parseFloat(r.montantTotal || '0').toLocaleString('fr-FR')} FCFA</TableCell>
+                    <TableCell>{r.statutLibelle}</TableCell>
+                    <TableCell>
+                      <div className="flex gap-2">
+                        <Button size="sm" variant="outline" onClick={() => fetchPdfById(r.id, 'print', r.numeroFrchq)}>
+                          <Printer className="w-4 h-4" />
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => fetchPdfById(r.id, 'download', r.numeroFrchq)}>
+                          <FileDown className="w-4 h-4" />
+                        </Button>
+                        
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
       {/* En-tête */}
       <div className="flex justify-between items-center">
         <div>
@@ -761,12 +891,7 @@ const BordereauRemiseCheques = () => {
         </div>
         <div className="flex items-center gap-2">
           {isEditMode && renderStatusActions()}
-          {!isEditMode && (
-            <Button onClick={handleSave} disabled={isSaving} className="gap-2">
-              {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-              Créer le FRCHQ
-            </Button>
-          )}
+          
         </div>
       </div>
 
@@ -1056,7 +1181,7 @@ const BordereauRemiseCheques = () => {
                 ) : (
                   <Save className="w-4 h-4" />
                 )}
-                {isEditMode ? "Mettre à jour" : "Créer le FRCHQ"}
+                {isEditMode ? "Mettre à jour" : "Enregistrer la remise"}
               </Button>
             </div>
           )}

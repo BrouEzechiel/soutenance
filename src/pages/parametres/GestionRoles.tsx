@@ -26,7 +26,6 @@ const API_BASE = (import.meta.env as any).VITE_API_BASE_URL ?? API_BASE_URL;
 const api = (path: string) => `${API_BASE}/${path.replace(/^\//, "")}`;
 
 const getAuthHeaders = (contentType: string | null = "application/json"): HeadersInit => {
-    const navigate = useNavigate();
     const token = localStorage.getItem("token");
     const headers: HeadersInit = {
         Accept: "application/json",
@@ -98,6 +97,7 @@ const permissionLabels: Record<string, string> = {
 
 const GestionRoles = () => {
     const { toast } = useToast();
+    const navigate = useNavigate();
     const [roles, setRoles] = useState<Role[]>([]);
     const [availablePermissions, setAvailablePermissions] = useState<Permission[]>([]);
     const [showForm, setShowForm] = useState(false);
